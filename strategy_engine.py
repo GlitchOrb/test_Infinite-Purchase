@@ -6,6 +6,13 @@ Rule-based regime FSM for semiconductor-sector rotation.
 Signal asset : SOXX (configurable)
 Trade targets : SOXL (bull), SOXS (bear), NONE (neutral / cash)
 
+Regime score uses **Dual-Momentum** signal (L + M + A):
+  L: close > SMA200
+  M: SMA50 > SMA200
+  A: 12-month absolute momentum > 0  (close / close_252d_ago - 1 > 0)
+
+SMA20 is still computed for chart display but does NOT affect scoring.
+
 All signals are derived deterministically from daily OHLCV of the signal
 asset.  No external AI / LLM calls at runtime.
 
@@ -55,7 +62,7 @@ class DailyDecision:
     close : float
         Signal-asset closing price.
     sma20 : float
-        20-day simple moving average.
+        20-day simple moving average (chart display only, not in score).
     sma50 : float
         50-day simple moving average.
     sma200 : float
@@ -64,14 +71,14 @@ class DailyDecision:
         close > SMA200.
     indicator_M : bool
         SMA50 > SMA200.
-    indicator_S : bool
-        SMA20 > SMA50.
+    indicator_A : bool
+        12-month absolute momentum > 0.
     score : int
-        Sum of L, M, S  (0..3).
+        Sum of L, M, A  (0..3).
     return_3m : float
         3-month (~63 trading-day) return of the signal asset.
     return_12m : float | None
-        12-month (~252 trading-day) return, optional.
+        12-month (~252 trading-day) return.
     effective_state : EffectiveState
         Current regime after FSM update.
     transition_active : bool
@@ -89,7 +96,7 @@ class DailyDecision:
     sma200: float
     indicator_L: bool
     indicator_M: bool
-    indicator_S: bool
+    indicator_A: bool
     score: int
     return_3m: float
     return_12m: Optional[float]
@@ -123,11 +130,14 @@ class StrategyEngine:
     signal_ticker : str
         Ticker whose OHLCV drives the signals (default ``"SOXX"``).
     sma_short : int
-        Short SMA window (default 20).
+        Short SMA window (default 20).  Computed for display only;
+        **not** used in the score formula.
     sma_mid : int
         Mid SMA window (default 50).
     sma_long : int
         Long SMA window (default 200).
+    abs_momentum_lookback : int
+        Lookback for 12-month absolute momentum (default 252).
     bear_return_threshold : float
         3-month return threshold to *activate* BEAR posture.
         Default ``-0.05`` (i.e. ≤ –5 %).
@@ -153,6 +163,7 @@ class StrategyEngine:
         sma_short: int = 20,
         sma_mid: int = 50,
         sma_long: int = 200,
+        abs_momentum_lookback: int = 252,
         bear_return_threshold: float = -0.05,
         bear_return_lookback: int = 63,
         transition_days: int = 3,
@@ -161,6 +172,7 @@ class StrategyEngine:
         self.sma_short = sma_short
         self.sma_mid = sma_mid
         self.sma_long = sma_long
+        self.abs_momentum_lookback = abs_momentum_lookback
         self.bear_return_threshold = bear_return_threshold
         self.bear_return_lookback = bear_return_lookback
         self.transition_days = transition_days
@@ -178,7 +190,10 @@ class StrategyEngine:
         * ``sma20``, ``sma50``, ``sma200``
         * ``L``  — close > SMA200
         * ``M``  — SMA50 > SMA200
-        * ``S``  — SMA20 > SMA50
+        * ``A``  — 12-month absolute momentum > 0
+
+        Note: SMA20 is computed for chart display only and does **not**
+        participate in the regime score.
 
         Parameters
         ----------
@@ -198,7 +213,10 @@ class StrategyEngine:
 
         out["L"] = out["close"] > out["sma200"]
         out["M"] = out["sma50"] > out["sma200"]
-        out["S"] = out["sma20"] > out["sma50"]
+
+        # 12-month absolute momentum
+        out["return_12m"] = out["close"].pct_change(periods=self.abs_momentum_lookback)
+        out["A"] = out["return_12m"] > 0
 
         return out
 
@@ -209,7 +227,10 @@ class StrategyEngine:
     def compute_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute the regime score (0..3) from boolean indicators.
 
-        Expects columns ``L``, ``M``, ``S`` to be present (call
+        Score = L + M + A  (Dual-Momentum formula).
+        SMA20 (``S``) is intentionally excluded from scoring.
+
+        Expects columns ``L``, ``M``, ``A`` to be present (call
         :meth:`compute_indicators` first).
 
         Parameters
@@ -222,7 +243,7 @@ class StrategyEngine:
             Copy with ``score`` column added.
         """
         out = df.copy()
-        out["score"] = out["L"].astype(int) + out["M"].astype(int) + out["S"].astype(int)
+        out["score"] = out["L"].astype(int) + out["M"].astype(int) + out["A"].astype(int)
         return out
 
     # ------------------------------------------------------------------ #
@@ -230,7 +251,10 @@ class StrategyEngine:
     # ------------------------------------------------------------------ #
 
     def compute_returns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute rolling 3-month (and 12-month) returns.
+        """Compute rolling 3-month return.
+
+        Note: 12-month return is now computed inside ``compute_indicators``
+        since it is part of the scoring formula (indicator A).
 
         Parameters
         ----------
@@ -240,17 +264,10 @@ class StrategyEngine:
         Returns
         -------
         pd.DataFrame
-            Copy with ``return_3m`` and ``return_12m`` columns.
+            Copy with ``return_3m`` column (``return_12m`` already present).
         """
         out = df.copy()
         out["return_3m"] = out["close"].pct_change(periods=self.bear_return_lookback)
-
-        lookback_12m = self.bear_return_lookback * 4  # ~252
-        if len(out) >= lookback_12m:
-            out["return_12m"] = out["close"].pct_change(periods=lookback_12m)
-        else:
-            out["return_12m"] = None
-
         return out
 
     # ------------------------------------------------------------------ #
@@ -272,7 +289,7 @@ class StrategyEngine:
         ----------
         row : pd.Series
             A single row containing at minimum: ``date | close | sma20 |
-            sma50 | sma200 | L | M | S | score | return_3m``
+            sma50 | sma200 | L | M | A | score | return_3m``
             (optionally ``return_12m``).
         previous_state : _FSMState
             Mutable state carried from the prior trading day.
@@ -340,7 +357,7 @@ class StrategyEngine:
             sma200=float(row["sma200"]) if pd.notna(row["sma200"]) else float("nan"),
             indicator_L=bool(row["L"]),
             indicator_M=bool(row["M"]),
-            indicator_S=bool(row["S"]),
+            indicator_A=bool(row["A"]),
             score=score,
             return_3m=return_3m,
             return_12m=return_12m,
@@ -373,12 +390,12 @@ class StrategyEngine:
         enriched = self.compute_score(enriched)
         enriched = self.compute_returns(enriched)
 
-        # Drop rows where indicators are not yet available
-        min_warmup = self.sma_long  # SMA200 requires 200 bars
-        enriched = enriched.iloc[min_warmup - 1:]  # keep from first valid SMA200
+        # Warmup: need both SMA200 and 12-month momentum
+        min_warmup = max(self.sma_long, self.abs_momentum_lookback)
+        enriched = enriched.iloc[min_warmup:]  # keep from first valid row
 
-        # Further restrict to rows where return_3m is available
-        enriched = enriched.dropna(subset=["sma200", "return_3m"])
+        # Drop any remaining NaN in critical columns
+        enriched = enriched.dropna(subset=["sma200", "return_3m", "return_12m"])
 
         state = _FSMState()  # defaults to NEUTRAL, no transition
         decisions: list[DailyDecision] = []
@@ -441,6 +458,7 @@ class StrategyEngine:
             f"StrategyEngine("
             f"signal={self.signal_ticker}, "
             f"sma=[{self.sma_short}/{self.sma_mid}/{self.sma_long}], "
+            f"abs_momentum_lookback={self.abs_momentum_lookback}, "
             f"bear_thresh={self.bear_return_threshold:.2%}, "
             f"transition_days={self.transition_days})"
         )

@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS positions (
     holding_days    INTEGER NOT NULL DEFAULT 0,
     loss_cut_stage  INTEGER NOT NULL DEFAULT 0,
     slices_used     INTEGER NOT NULL DEFAULT 0,
+    cooldown_remaining INTEGER NOT NULL DEFAULT 0,
+    forced_close    INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT    NOT NULL
 );
 
@@ -81,9 +83,10 @@ CREATE TABLE IF NOT EXISTS regime_history (
     sma200          REAL,
     indicator_L     INTEGER,
     indicator_M     INTEGER,
-    indicator_S     INTEGER,
+    indicator_A     INTEGER,
     score           INTEGER,
     return_3m       REAL,
+    return_12m      REAL,
     effective_state TEXT,
     transition_active INTEGER,
     transition_day  INTEGER,

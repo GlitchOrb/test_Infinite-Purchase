@@ -45,7 +45,7 @@ def _decision(
     return DailyDecision(
         date=pd.Timestamp(date), close=close,
         sma20=close, sma50=close, sma200=close,
-        indicator_L=True, indicator_M=True, indicator_S=True,
+        indicator_L=True, indicator_M=True, indicator_A=True,
         score=score, return_3m=0.0, return_12m=None,
         effective_state=state,
         transition_active=transition_active,
@@ -148,7 +148,7 @@ class TestSoxlBuy:
 
 
 # ===================================================================== #
-#  B) SOXL trailing stop
+#  B) SOXL trailing stop — peak definition
 # ===================================================================== #
 
 class TestSoxlTrailingStop:
@@ -201,9 +201,51 @@ class TestSoxlTrailingStop:
         _, new_st = mgr.process_day(dec, 95.0, 10.0, 100_000, st)
         assert new_st.soxl_max_price == 95.0
 
+    # --- B) Peak persists across partial sells --- #
+    def test_peak_persists_after_partial_sell(self, mgr):
+        """After a partial trailing sell (stage 1), the peak does not reset."""
+        st = _state_with_soxl(qty=100, max_price=100.0)
+        dec = _decision()
+        # Trigger stage 1 sell
+        intents, new_st = mgr.process_day(dec, 84.0, 10.0, 100_000, st)
+        assert new_st.soxl_max_price == 100.0  # peak unchanged
+        assert new_st.soxl_trailing_stage == 1
+
+    # --- B) Adding slices does NOT reset peak --- #
+    def test_slice_buy_does_not_reset_peak(self, mgr):
+        """Buying additional slices must NOT reset max_price."""
+        st = _state_with_soxl(qty=100, avg_cost=50.0, max_price=60.0, slices=5)
+        # Simulate a buy fill
+        new_st = mgr.apply_fill("SOXL", OrderSide.BUY, 50, 45.0,
+                                pd.Timestamp("2024-06-01"), st)
+        # Peak should still be 60.0, not reset to 45.0
+        assert new_st.soxl_max_price == 60.0
+        assert new_st.soxl.qty == 150
+
+    # --- B) Full exit resets peak and stage --- #
+    def test_full_exit_resets_peak_and_stage(self, mgr):
+        st = _state_with_soxl(qty=100, max_price=120.0, slices=10)
+        st.soxl_trailing_stage = 1
+        new_st = mgr.apply_fill("SOXL", OrderSide.SELL, 100, 80.0,
+                                pd.Timestamp("2024-06-01"), st)
+        assert new_st.soxl_max_price == 0.0
+        assert new_st.soxl_trailing_stage == 0
+
+    # --- B) Stage transitions are one-shot --- #
+    def test_stage_transitions_do_not_refire(self, mgr):
+        """Once stage is 1, hitting -15% again does NOT re-fire."""
+        st = _state_with_soxl(qty=50, max_price=100.0)
+        st.soxl_trailing_stage = 1
+        dec = _decision()
+        # Price at -16% again — should NOT fire another stage 1 sell
+        intents, new_st = mgr.process_day(dec, 84.0, 10.0, 100_000, st)
+        sells = [i for i in intents if i.reason == "TRAILING_STOP_50PCT"]
+        assert sells == []
+        assert new_st.soxl_trailing_stage == 1  # stays at 1, not re-fired
+
 
 # ===================================================================== #
-#  C) SOXS sub-engine
+#  C) SOXS sub-engine + cooldown
 # ===================================================================== #
 
 class TestSoxsBuy:
@@ -232,6 +274,31 @@ class TestSoxsBuy:
         buys = [i for i in intents if i.symbol == "SOXS" and i.side == OrderSide.BUY]
         assert buys == []
 
+    def test_cooldown_blocks_soxs_buy(self, mgr):
+        """During cooldown after forced close, SOXS buys are blocked."""
+        st = TradeManagerState(soxs_cooldown_remaining=2)
+        dec = _decision(state=EffectiveState.BEAR_ACTIVE, score=0)
+        intents, new_st = mgr.process_day(dec, 50.0, 10.0, 100_000, st)
+        buys = [i for i in intents if i.symbol == "SOXS" and i.side == OrderSide.BUY]
+        assert buys == []
+        # Cooldown ticks down by 1
+        assert new_st.soxs_cooldown_remaining == 1
+
+    def test_cooldown_expires_allows_buy(self, mgr):
+        """After cooldown expires, SOXS buys are allowed again."""
+        st = TradeManagerState(soxs_cooldown_remaining=1)
+        dec = _decision(state=EffectiveState.BEAR_ACTIVE, score=0)
+        # Day 1: cooldown ticks 1→0, but still blocks (checked before tick)
+        intents, new_st = mgr.process_day(dec, 50.0, 10.0, 100_000, st)
+        buys = [i for i in intents if i.symbol == "SOXS" and i.side == OrderSide.BUY]
+        assert buys == []
+        assert new_st.soxs_cooldown_remaining == 0
+
+        # Day 2: cooldown at 0, buy should be allowed
+        intents2, _ = mgr.process_day(dec, 50.0, 10.0, 100_000, new_st)
+        buys2 = [i for i in intents2 if i.symbol == "SOXS" and i.side == OrderSide.BUY]
+        assert len(buys2) == 1
+
 
 class TestSoxsExits:
 
@@ -247,9 +314,49 @@ class TestSoxsExits:
     def test_max_holding_exit(self, mgr):
         st = _state_with_soxs(holding_days=24)  # will increment to 25
         dec = _decision(state=EffectiveState.BEAR_ACTIVE, score=0)
-        intents, _ = mgr.process_day(dec, 50.0, 30.0, 100_000, st)
+        intents, new_st = mgr.process_day(dec, 50.0, 30.0, 100_000, st)
         exits = [i for i in intents if i.reason == "MAX_HOLDING_EXIT"]
         assert len(exits) == 1
+        # Cooldown should be set
+        assert new_st.soxs_cooldown_remaining == mgr.cfg.soxs_cooldown_days
+        assert new_st.soxs_forced_close is True
+
+    def test_max_holding_then_cooldown_blocks_rebuy(self, mgr):
+        """Full scenario: day 25 forced sell → next days blocked → then allowed."""
+        # Day 25: forced sell
+        st = _state_with_soxs(qty=50, holding_days=24)
+        dec = _decision(state=EffectiveState.BEAR_ACTIVE, score=0)
+        intents, new_st = mgr.process_day(dec, 50.0, 30.0, 100_000, st)
+        assert any(i.reason == "MAX_HOLDING_EXIT" for i in intents)
+        assert new_st.soxs_cooldown_remaining == 3
+
+        # Simulate full exit via apply_fill
+        new_st = mgr.apply_fill("SOXS", OrderSide.SELL, 50, 30.0,
+                                pd.Timestamp("2024-06-01"), new_st)
+        assert new_st.soxs.qty == 0
+
+        # Day 26: cooldown 3→2, blocked
+        intents2, st2 = mgr.process_day(dec, 50.0, 10.0, 100_000, new_st)
+        buys = [i for i in intents2 if i.symbol == "SOXS" and i.side == OrderSide.BUY]
+        assert buys == []
+        assert st2.soxs_cooldown_remaining == 2
+
+        # Day 27: cooldown 2→1, blocked
+        intents3, st3 = mgr.process_day(dec, 50.0, 10.0, 100_000, st2)
+        buys = [i for i in intents3 if i.symbol == "SOXS" and i.side == OrderSide.BUY]
+        assert buys == []
+        assert st3.soxs_cooldown_remaining == 1
+
+        # Day 28: cooldown 1→0, blocked (checked before tick)
+        intents4, st4 = mgr.process_day(dec, 50.0, 10.0, 100_000, st3)
+        buys = [i for i in intents4 if i.symbol == "SOXS" and i.side == OrderSide.BUY]
+        assert buys == []
+        assert st4.soxs_cooldown_remaining == 0
+
+        # Day 29: cooldown = 0, buy allowed!
+        intents5, _ = mgr.process_day(dec, 50.0, 10.0, 100_000, st4)
+        buys = [i for i in intents5 if i.symbol == "SOXS" and i.side == OrderSide.BUY]
+        assert len(buys) == 1
 
     def test_loss_cut_50pct(self, mgr):
         st = _state_with_soxs(qty=50, avg_cost=30.0)
@@ -310,18 +417,29 @@ class TestTransition:
 
 
 # ===================================================================== #
-#  E) Vampire rebalance
+#  E) Vampire rebalance — dynamic ratio + cap
 # ===================================================================== #
 
 class TestVampireRebalance:
 
-    def test_injection_added(self, mgr):
+    def test_injection_at_40pct_drawdown(self, mgr):
+        """dd = -45% (between -40% and -50%) → ratio = 0.70."""
         st = _state_with_soxl(qty=100, avg_cost=100.0)
         soxl_price = 55.0  # -45 % drawdown
         new_st = mgr.on_realized_pnl(
             "SOXS", 1000.0, EffectiveState.BEAR_ACTIVE, soxl_price, st,
         )
-        expected = 1000.0 * mgr.cfg.vampire_inject_ratio
+        expected = 1000.0 * mgr.cfg.vampire_inject_ratio_normal  # 0.70
+        assert new_st.injection_budget == pytest.approx(expected)
+
+    def test_injection_at_50pct_drawdown(self, mgr):
+        """dd = -55% (past -50%) → ratio = 0.50."""
+        st = _state_with_soxl(qty=100, avg_cost=100.0)
+        soxl_price = 45.0  # -55 % drawdown
+        new_st = mgr.on_realized_pnl(
+            "SOXS", 1000.0, EffectiveState.BEAR_ACTIVE, soxl_price, st,
+        )
+        expected = 1000.0 * mgr.cfg.vampire_inject_ratio_deep  # 0.50
         assert new_st.injection_budget == pytest.approx(expected)
 
     def test_no_injection_if_bull(self, mgr):
@@ -344,6 +462,41 @@ class TestVampireRebalance:
             "SOXS", -500.0, EffectiveState.BEAR_ACTIVE, 55.0, st,
         )
         assert new_st.injection_budget == 0.0
+
+    def test_injection_capped_by_remaining_slices(self, mgr):
+        """If all slices used, injection should be zero."""
+        st = _state_with_soxl(qty=100, avg_cost=100.0, slices=35)  # max
+        soxl_price = 55.0  # -45%
+        new_st = mgr.on_realized_pnl(
+            "SOXS", 10000.0, EffectiveState.BEAR_ACTIVE, soxl_price, st,
+        )
+        assert new_st.injection_budget == 0.0  # no remaining slices
+
+    def test_injection_budget_persists(self, mgr):
+        """Budget accumulates across multiple calls."""
+        st = _state_with_soxl(qty=100, avg_cost=100.0)
+        soxl_price = 55.0
+        st1 = mgr.on_realized_pnl(
+            "SOXS", 500.0, EffectiveState.BEAR_ACTIVE, soxl_price, st,
+        )
+        st2 = mgr.on_realized_pnl(
+            "SOXS", 300.0, EffectiveState.BEAR_ACTIVE, soxl_price, st1,
+        )
+        ratio = mgr.cfg.vampire_inject_ratio_normal  # 0.70
+        expected = 500.0 * ratio + 300.0 * ratio
+        assert st2.injection_budget == pytest.approx(expected)
+
+    def test_injection_drain_during_buy(self, mgr):
+        """Injection budget properly consumed during SOXL buy."""
+        capital = 100_000
+        slice_size = capital / mgr.cfg.soxl_max_slices
+        st = TradeManagerState(injection_budget=2000.0)
+        dec = _decision(state=EffectiveState.BULL_ACTIVE)
+        intents, new_st = mgr.process_day(dec, 50.0, 10.0, capital, st)
+        buys = [i for i in intents if i.symbol == "SOXL" and i.side == OrderSide.BUY]
+        # Notional should include injection
+        assert buys[0].notional == pytest.approx(slice_size + 2000.0, rel=1e-6)
+        assert new_st.injection_budget == pytest.approx(0.0, abs=0.01)
 
 
 # ===================================================================== #
@@ -398,6 +551,16 @@ class TestApplyFill:
         assert new.soxs_loss_cut_stage == 0
         assert new.soxs_slices_used == 0
 
+    def test_soxs_sell_all_preserves_cooldown(self, mgr):
+        """Cooldown should NOT be reset when position is closed."""
+        st = _state_with_soxs(qty=50)
+        st.soxs_cooldown_remaining = 3
+        new = mgr.apply_fill("SOXS", OrderSide.SELL, 50, 35.0,
+                             pd.Timestamp("2024-06-01"), st)
+        assert new.soxs.qty == 0
+        # Cooldown persists — it ticks down in _update_tracking
+        assert new.soxs_cooldown_remaining == 3
+
 
 # ===================================================================== #
 #  Sell capping / deduplication
@@ -406,7 +569,6 @@ class TestApplyFill:
 class TestSellCapping:
 
     def test_cap_prevents_oversell(self, mgr):
-        # Total sell qty if both SOXS TP and transition sell-all fire
         st = _state_with_soxs(qty=50, avg_cost=30.0)
         tp_price = 30.0 * 1.10  # above TP
         dec = _decision(state=EffectiveState.TRANSITION,

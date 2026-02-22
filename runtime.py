@@ -105,6 +105,8 @@ def _load_tm_state(conn: sqlite3.Connection) -> TradeManagerState:
     st.soxs_holding_days = soxs_row.get("holding_days", 0)
     st.soxs_loss_cut_stage = soxs_row.get("loss_cut_stage", 0)
     st.soxs_slices_used = soxs_row.get("slices_used", 0)
+    st.soxs_cooldown_remaining = soxs_row.get("cooldown_remaining", 0)
+    st.soxs_forced_close = bool(soxs_row.get("forced_close", 0))
 
     budget_str = get_system(conn, "injection_budget")
     st.injection_budget = float(budget_str) if budget_str else 0.0
@@ -124,6 +126,8 @@ def _persist_tm_state(conn: sqlite3.Connection, st: TradeManagerState) -> None:
             "holding_days": st.soxs_holding_days,
             "loss_cut_stage": st.soxs_loss_cut_stage,
             "slices_used": st.soxs_slices_used,
+            "cooldown_remaining": st.soxs_cooldown_remaining,
+            "forced_close": int(st.soxs_forced_close),
         }),
     ]:
         upsert_position(
@@ -197,6 +201,18 @@ class Runtime:
 
         # Register chejan callback
         self.kiwoom.on_chejan(self._on_chejan)
+
+        # Validate Kiwoom TR configuration (E)
+        tr_issues = self.cfg.kiwoom_tr.validate()
+        if tr_issues:
+            log.warning(
+                "Kiwoom TR placeholders still present — "
+                "trading DISABLED until replaced:\n  %s",
+                "\n  ".join(tr_issues),
+            )
+            set_emergency_stop(self.conn, True)
+            # Do NOT abort — the system stays up for monitoring / UI,
+            # but will refuse to submit any orders.
 
         # Startup reconcile (mandatory)
         self._reconcile(is_startup=True)
@@ -598,11 +614,12 @@ class Runtime:
         # Example: 해외주식현재가 TR with appropriate inputs
         if not self.kiwoom:
             return 0.0
+        tr = self.cfg.kiwoom_tr
         resp = self.kiwoom.request_tr(
-            trcode="hts/overseas",  # TODO(kiwoom): replace with actual TR
+            trcode=tr.tr_current_price,
             rqname=f"PRICE_{symbol}",
-            inputs={"종목코드": symbol},
-            output_fields=["현재가"],
+            inputs={tr.tr_current_price_input: symbol},
+            output_fields=[tr.tr_current_price_output],
         )
         if resp.rows:
             try:
@@ -623,7 +640,7 @@ class Runtime:
             sma200=regime.get("sma200", 0.0),
             indicator_L=bool(regime.get("indicator_L", 0)),
             indicator_M=bool(regime.get("indicator_M", 0)),
-            indicator_S=bool(regime.get("indicator_S", 0)),
+            indicator_A=bool(regime.get("indicator_A", 0)),
             score=regime.get("score", 0),
             return_3m=regime.get("return_3m", 0.0),
             return_12m=None,

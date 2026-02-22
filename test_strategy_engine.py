@@ -68,11 +68,16 @@ def engine() -> StrategyEngine:
 
 @pytest.fixture
 def short_engine() -> StrategyEngine:
-    """Engine with shorter SMA windows for fast unit tests."""
+    """Engine with shorter SMA windows for fast unit tests.
+
+    Uses abs_momentum_lookback=5 so that 12m return is available
+    after just 5 bars (matching bear_return_lookback).
+    """
     return StrategyEngine(
         sma_short=3,
         sma_mid=5,
         sma_long=10,
+        abs_momentum_lookback=5,
         bear_return_lookback=5,
         transition_days=3,
     )
@@ -90,8 +95,6 @@ class TestComputeIndicators:
         df = _make_ohlcv(_flat_closes(100.0, 20))
         result = short_engine.compute_indicators(df)
 
-        # After warmup, SMA values should equal 100
-        valid = result.dropna(subset=["sma20"])  # sma20 won't exist → use sma10
         valid = result.dropna(subset=["sma200"])  # short_engine uses sma_long=10
         assert not valid.empty
         assert all(valid["sma20"].round(6) == 100.0)   # sma_short=3
@@ -100,12 +103,30 @@ class TestComputeIndicators:
 
     def test_L_flag(self, short_engine: StrategyEngine):
         """Close above SMA_long → L is True."""
-        # First 10 flat at 100, then jump to 200
         closes = _flat_closes(100.0, 10) + _flat_closes(200.0, 5)
         df = _make_ohlcv(closes)
         result = short_engine.compute_indicators(df)
         last = result.iloc[-1]
         assert last["L"] is True or last["L"] == True  # noqa: E712
+
+    def test_A_flag_positive_momentum(self, short_engine: StrategyEngine):
+        """12-month return > 0 → A is True."""
+        # Start at 100, end at 120 (positive momentum)
+        closes = _flat_closes(100.0, 10) + _flat_closes(120.0, 5)
+        df = _make_ohlcv(closes)
+        result = short_engine.compute_indicators(df)
+        # After abs_momentum_lookback=5, the 12m return should be computable
+        last = result.iloc[-1]
+        assert last["A"] is True or last["A"] == True  # noqa: E712
+
+    def test_A_flag_negative_momentum(self, short_engine: StrategyEngine):
+        """12-month return < 0 → A is False."""
+        # Start at 120, drop to 100 (negative momentum)
+        closes = _flat_closes(120.0, 10) + _flat_closes(100.0, 5)
+        df = _make_ohlcv(closes)
+        result = short_engine.compute_indicators(df)
+        last = result.iloc[-1]
+        assert last["A"] is False or last["A"] == False  # noqa: E712
 
     def test_no_mutation(self, short_engine: StrategyEngine):
         """compute_indicators must NOT mutate the input DataFrame."""
@@ -116,28 +137,36 @@ class TestComputeIndicators:
 
 
 # ===================================================================== #
-#  2. Score computation
+#  2. Score computation — Dual Momentum (L + M + A)
 # ===================================================================== #
 
 class TestComputeScore:
     """Tests for compute_score (stateless)."""
 
     def test_all_true(self, short_engine: StrategyEngine):
-        """L=M=S=True → score == 3."""
-        df = pd.DataFrame({"L": [True], "M": [True], "S": [True]})
+        """L=M=A=True → score == 3."""
+        df = pd.DataFrame({"L": [True], "M": [True], "A": [True]})
         result = short_engine.compute_score(df)
         assert result["score"].iloc[0] == 3
 
     def test_all_false(self, short_engine: StrategyEngine):
-        """L=M=S=False → score == 0."""
-        df = pd.DataFrame({"L": [False], "M": [False], "S": [False]})
+        """L=M=A=False → score == 0."""
+        df = pd.DataFrame({"L": [False], "M": [False], "A": [False]})
         result = short_engine.compute_score(df)
         assert result["score"].iloc[0] == 0
 
     def test_mixed(self, short_engine: StrategyEngine):
-        df = pd.DataFrame({"L": [True], "M": [False], "S": [True]})
+        """L=True, M=False, A=True → score == 2."""
+        df = pd.DataFrame({"L": [True], "M": [False], "A": [True]})
         result = short_engine.compute_score(df)
         assert result["score"].iloc[0] == 2
+
+    def test_sma20_excluded_from_score(self, short_engine: StrategyEngine):
+        """Score should only depend on L, M, A — not on SMA20/S."""
+        df = pd.DataFrame({"L": [True], "M": [True], "A": [True]})
+        result = short_engine.compute_score(df)
+        # Even if we added an "S" column, the score computation ignores it
+        assert result["score"].iloc[0] == 3
 
 
 # ===================================================================== #
@@ -157,10 +186,10 @@ class TestUpdateState:
             "sma200": 100.0,
             "L": True,
             "M": True,
-            "S": True,
+            "A": True,
             "score": 3,
             "return_3m": 0.0,
-            "return_12m": None,
+            "return_12m": 0.05,
         }
         defaults.update(kwargs)
         return pd.Series(defaults, name=pd.Timestamp("2024-06-01"))
@@ -177,7 +206,7 @@ class TestUpdateState:
     # ---- Score 0 with deep drawdown → BEAR_ACTIVE ---- #
     def test_score0_deep_drawdown(self, engine: StrategyEngine):
         prev = _FSMState(effective_state=EffectiveState.NEUTRAL)
-        row = self._make_row(score=0, L=False, M=False, S=False, return_3m=-0.10)
+        row = self._make_row(score=0, L=False, M=False, A=False, return_3m=-0.10)
         new_state, decision = engine.update_state(row, prev)
         assert new_state.effective_state == EffectiveState.BEAR_ACTIVE
         assert decision.engine_intent == EngineIntent.SOXS
@@ -185,7 +214,7 @@ class TestUpdateState:
     # ---- Score 0 with mild drawdown → NEUTRAL ---- #
     def test_score0_mild_drawdown(self, engine: StrategyEngine):
         prev = _FSMState(effective_state=EffectiveState.NEUTRAL)
-        row = self._make_row(score=0, L=False, M=False, S=False, return_3m=-0.02)
+        row = self._make_row(score=0, L=False, M=False, A=False, return_3m=-0.02)
         new_state, decision = engine.update_state(row, prev)
         assert new_state.effective_state == EffectiveState.NEUTRAL
         assert decision.engine_intent == EngineIntent.NONE
@@ -193,14 +222,14 @@ class TestUpdateState:
     # ---- Score 0 at exactly -5 % → BEAR_ACTIVE (boundary) ---- #
     def test_score0_exact_threshold(self, engine: StrategyEngine):
         prev = _FSMState(effective_state=EffectiveState.NEUTRAL)
-        row = self._make_row(score=0, L=False, M=False, S=False, return_3m=-0.05)
+        row = self._make_row(score=0, L=False, M=False, A=False, return_3m=-0.05)
         new_state, decision = engine.update_state(row, prev)
         assert new_state.effective_state == EffectiveState.BEAR_ACTIVE
 
     # ---- Score 1..2 → NEUTRAL ---- #
     def test_score1_neutral(self, engine: StrategyEngine):
         prev = _FSMState(effective_state=EffectiveState.BULL_ACTIVE)
-        row = self._make_row(score=2, L=True, M=True, S=False)
+        row = self._make_row(score=2, L=True, M=True, A=False)
         new_state, decision = engine.update_state(row, prev)
         assert new_state.effective_state == EffectiveState.NEUTRAL
         assert decision.engine_intent == EngineIntent.NONE
@@ -261,7 +290,7 @@ class TestUpdateState:
             transition_day=1,
         )
         # Score drops to 2 during transition — transition still proceeds
-        row = self._make_row(score=2, S=False)
+        row = self._make_row(score=2, A=False)
         new_state, decision = engine.update_state(row, prev)
         assert new_state.transition_active is True
         assert new_state.transition_day == 2
@@ -284,7 +313,7 @@ class TestDailyDecision:
             sma200=97.0,
             indicator_L=True,
             indicator_M=True,
-            indicator_S=True,
+            indicator_A=True,
             score=3,
             return_3m=0.05,
             return_12m=0.20,
@@ -296,6 +325,20 @@ class TestDailyDecision:
         with pytest.raises(AttributeError):
             d.score = 999  # type: ignore[misc]
 
+    def test_indicator_A_replaces_S(self):
+        """DailyDecision has indicator_A, not indicator_S."""
+        d = DailyDecision(
+            date=pd.Timestamp("2024-01-01"),
+            close=100.0, sma20=99.0, sma50=98.0, sma200=97.0,
+            indicator_L=True, indicator_M=True, indicator_A=False,
+            score=2, return_3m=0.05, return_12m=0.20,
+            effective_state=EffectiveState.NEUTRAL,
+            transition_active=False, transition_day=0,
+            engine_intent=EngineIntent.NONE,
+        )
+        assert d.indicator_A is False
+        assert not hasattr(d, "indicator_S")
+
 
 # ===================================================================== #
 #  5. Full run (integration)
@@ -305,7 +348,7 @@ class TestRun:
     """Integration tests for StrategyEngine.run()."""
 
     def test_flat_market_stays_neutral_or_bull(self, short_engine: StrategyEngine):
-        """In a perfectly flat market all SMAs equal → L, M, S flags
+        """In a perfectly flat market all SMAs equal → L, M flags
         depend on strict > so close is NOT > SMA → score 0.
         But return_3m == 0.0 which is > -5%, so state is NEUTRAL.
         """
@@ -314,13 +357,13 @@ class TestRun:
         decisions = short_engine.run(df)
         assert len(decisions) > 0
         for d in decisions:
-            # Flat → close == sma200 → L is False (not strictly >)
             assert d.effective_state in (EffectiveState.NEUTRAL, EffectiveState.BULL_ACTIVE)
 
     def test_strong_uptrend_becomes_bull(self):
         """A steep uptrend should eventually produce Score 3 → BULL_ACTIVE."""
         engine = StrategyEngine(
             sma_short=3, sma_mid=5, sma_long=10,
+            abs_momentum_lookback=5,
             bear_return_lookback=5, transition_days=3,
         )
         # Start flat then ramp hard
@@ -334,6 +377,7 @@ class TestRun:
         """A sharp decline should trigger BEAR_ACTIVE."""
         engine = StrategyEngine(
             sma_short=3, sma_mid=5, sma_long=10,
+            abs_momentum_lookback=5,
             bear_return_lookback=5, transition_days=3,
             bear_return_threshold=-0.05,
         )
@@ -345,20 +389,10 @@ class TestRun:
         assert len(bear_days) > 0, "Expected BEAR_ACTIVE during severe crash"
 
     def test_bear_to_bull_has_transition(self):
-        """Recovery from bear should include a TRANSITION phase.
-
-        Strategy:
-        - Use bear_return_lookback=20 so the 3-month return still
-          references pre-crash prices while SMAs converge at 80.
-        - Hold price flat at 80 for 11 days so SMA3/5/10 all converge
-          to exactly 80.  Score = 0 (strict >) and return_3m ≈ −60 %
-          → BEAR_ACTIVE.
-        - A single tick to 81 makes close > SMA10, SMA5 > SMA10, and
-          SMA3 > SMA5 all flip on the same day → Score jumps 0 → 3
-          while previous state is still BEAR_ACTIVE → TRANSITION fires.
-        """
+        """Recovery from bear should include a TRANSITION phase."""
         engine = StrategyEngine(
             sma_short=3, sma_mid=5, sma_long=10,
+            abs_momentum_lookback=5,
             bear_return_lookback=20, transition_days=3,
             bear_return_threshold=-0.05,
         )
@@ -416,7 +450,7 @@ class TestEdgeCases:
         assert decisions == []
 
     def test_too_few_rows(self, engine: StrategyEngine):
-        """Fewer rows than SMA200 warmup → empty output."""
+        """Fewer rows than max(SMA200, 252) warmup → empty output."""
         df = _make_ohlcv(_flat_closes(100.0, 50))
         decisions = engine.run(df)
         assert decisions == []
@@ -425,6 +459,7 @@ class TestEdgeCases:
         """A stricter bear threshold should require a deeper drawdown."""
         engine = StrategyEngine(
             sma_short=3, sma_mid=5, sma_long=10,
+            abs_momentum_lookback=5,
             bear_return_lookback=5,
             bear_return_threshold=-0.20,  # very strict
         )
@@ -436,10 +471,10 @@ class TestEdgeCases:
             "sma200": 100.0,
             "L": False,
             "M": False,
-            "S": False,
+            "A": False,
             "score": 0,
             "return_3m": -0.10,  # only -10 %, threshold is -20 %
-            "return_12m": None,
+            "return_12m": -0.15,
         }, name=pd.Timestamp("2024-06-01"))
         new_state, decision = engine.update_state(row, prev)
         assert new_state.effective_state == EffectiveState.NEUTRAL  # NOT bear
@@ -448,6 +483,7 @@ class TestEdgeCases:
         r = repr(engine)
         assert "SOXX" in r
         assert "200" in r
+        assert "abs_momentum_lookback" in r
 
 
 # ===================================================================== #

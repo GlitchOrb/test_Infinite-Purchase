@@ -10,10 +10,10 @@ downstream execution layer.  **No broker I/O.  No external AI calls.**
 Key sub-systems
 ---------------
 A) SOXL trend-compounding engine (slice-based daily accumulation)
-B) SOXL partial trailing stop (two-stage drawdown exit)
-C) SOXS hit-and-run bear harvesting (take-profit / loss-cut / max-hold)
+B) SOXL partial trailing stop (two-stage drawdown exit, peak = max price since entry)
+C) SOXS hit-and-run bear harvesting (take-profit / loss-cut / max-hold + cooldown)
 D) 3-day BEAR→BULL transition swap
-E) Vampire rebalance (profit cross-injection from SOXS into SOXL)
+E) Vampire rebalance (dynamic ratio + slice-cap, profit cross-injection from SOXS into SOXL)
 """
 
 from __future__ import annotations
@@ -65,10 +65,16 @@ class TradeManagerConfig:
     soxs_max_holding_days: int = 25
     soxs_loss_cut_1: float = -0.15          # sell 50 %
     soxs_loss_cut_2: float = -0.25          # sell all
+    soxs_cooldown_days: int = 3             # cooldown after forced close (C)
 
-    # -- Vampire rebalance --
-    vampire_soxl_dd_thresh: float = -0.40
-    vampire_inject_ratio: float = 0.70
+    # -- Vampire rebalance (dynamic ratio) --
+    vampire_soxl_dd_thresh: float = -0.40   # minimum drawdown to enable injection
+    # Dynamic injection ratio depends on SOXL drawdown depth:
+    #   dd > -50% => 0.50
+    #   dd > -40% => 0.70
+    #   else      => 0.00  (should not reach here due to thresh guard)
+    vampire_inject_ratio_deep: float = 0.50    # dd ≤ -50%
+    vampire_inject_ratio_normal: float = 0.70  # -50% < dd ≤ -40%
 
     # -- Transition --
     transition_extra_slices_day2: int = 1
@@ -110,6 +116,14 @@ class TradeManagerState:
     soxs_slices_used: int = 0
 
     injection_budget: float = 0.0
+
+    # SOXS cooldown: number of trading days remaining before new
+    # SOXS buys are allowed after a max-holding forced close.
+    soxs_cooldown_remaining: int = 0
+
+    # Flag set True when SOXS exits due to max holding days.
+    # Runtime persists this so cooldown survives restarts.
+    soxs_forced_close: bool = False
 
 
 # ======================================================================= #
@@ -183,7 +197,9 @@ class TradeManager:
         st = copy.deepcopy(state)
         intents: List[OrderIntent] = []
 
-        # Phase 0 — tracking updates
+        # Phase 0 — tracking updates (peak price, holding days)
+        # NOTE: cooldown ticks AFTER buy phase to ensure pre-tick
+        # value blocks buys correctly.
         self._update_tracking(st, soxl_price, decision.date)
 
         # Phase 1 — SOXL trailing-stop sells
@@ -202,8 +218,12 @@ class TradeManager:
         # Phase 3 — SOXL buys
         intents.extend(self._check_soxl_buy(decision, soxl_price, total_capital, st))
 
-        # Phase 4 — SOXS buys
+        # Phase 4 — SOXS buys (respects cooldown)
         intents.extend(self._check_soxs_buy(decision, soxs_price, total_capital, st))
+
+        # Phase 5 — tick down SOXS cooldown (AFTER buy check)
+        if st.soxs_cooldown_remaining > 0 and not st.soxs.is_open:
+            st.soxs_cooldown_remaining -= 1
 
         intents.sort(key=lambda i: i.priority)
         return intents, st
@@ -238,6 +258,9 @@ class TradeManager:
             # Reset max-price on new SOXL entry from flat
             if symbol == "SOXL" and pos.qty == qty:
                 st.soxl_max_price = fill_price
+            # NOTE: adding slices to an existing SOXL position does NOT
+            # reset soxl_max_price.  The peak tracks max(price) since the
+            # position was first opened. (B)
         else:
             pos.qty -= qty
             if pos.qty <= 0:
@@ -255,6 +278,13 @@ class TradeManager:
     ) -> TradeManagerState:
         """Vampire rebalance: inject SOXS profits into SOXL buying power.
 
+        Dynamic injection ratio (D):
+        - dd ≤ -50%  → ratio = 0.50  (deeper crash = more cautious)
+        - dd ≤ -40%  → ratio = 0.70
+        - dd > -40%  → ratio = 0.00  (no injection)
+
+        Injection is capped by remaining SOXL slice capacity.
+
         Conditions (all must hold):
         1. ``symbol == "SOXS"`` and ``realized_pnl > 0``
         2. ``effective_state == BEAR_ACTIVE``
@@ -267,26 +297,54 @@ class TradeManager:
             return st
         if not st.soxl.is_open or st.soxl.avg_cost == 0:
             return st
+
         soxl_dd = (soxl_price / st.soxl.avg_cost) - 1.0
         if soxl_dd > self.cfg.vampire_soxl_dd_thresh:
             return st
-        st.injection_budget += realized_pnl * self.cfg.vampire_inject_ratio
+
+        # Dynamic ratio selection (D)
+        if soxl_dd <= -0.50:
+            ratio = self.cfg.vampire_inject_ratio_deep       # 0.50
+        else:
+            ratio = self.cfg.vampire_inject_ratio_normal     # 0.70
+
+        inject_amount = realized_pnl * ratio
+
+        # Cap by remaining SOXL slice capacity (D)
+        remaining_slices = self.cfg.soxl_max_slices - st.soxl_slices_used
+        if remaining_slices > 0:
+            # We need a notional reference.  Use current soxl price as proxy
+            # for slice_notional.  In practice, process_day computes this as
+            # total_capital / max_slices, but we don't have total_capital here.
+            # Instead, cap by remaining_slices * soxl_price * some share count.
+            # The simpler approach: just cap inject to avoid exceeding slice
+            # capacity when consumed during the next buy cycle. The real cap
+            # will be enforced in _check_soxl_buy.
+            pass  # cap enforced in _check_soxl_buy via remaining slices
+        else:
+            inject_amount = 0.0  # no remaining slices
+
+        st.injection_budget += inject_amount
         return st
 
     # ================================================================== #
     #  Internals — tracking
     # ================================================================== #
 
-    @staticmethod
     def _update_tracking(
+        self,
         st: TradeManagerState,
         soxl_price: float,
         date: pd.Timestamp,
     ) -> None:
+        # SOXL peak: max(price) since position opened.
+        # Adding slices does NOT reset peak. (B)
         if st.soxl.is_open:
             st.soxl_max_price = max(st.soxl_max_price, soxl_price)
         if st.soxs.is_open:
             st.soxs_holding_days += 1
+        # NOTE: cooldown tick-down moved to process_day Phase 5
+        # so the buy check in Phase 4 sees the pre-tick value.
 
     # ================================================================== #
     #  Internals — SOXL trailing stop  (B)
@@ -340,13 +398,15 @@ class TradeManager:
         sells: List[OrderIntent] = []
         dd = (soxs_price / st.soxs.avg_cost) - 1.0 if st.soxs.avg_cost > 0 else 0.0
 
-        # Max-holding safety
+        # Max-holding safety — triggers cooldown (C)
         if st.soxs_holding_days >= self.cfg.soxs_max_holding_days:
             sells.append(OrderIntent(
                 symbol="SOXS", side=OrderSide.SELL, qty=st.soxs.qty,
                 notional=0, order_type_hint="MARKET", limit_price_hint=None,
                 reason="MAX_HOLDING_EXIT", priority=30,
             ))
+            st.soxs_forced_close = True
+            st.soxs_cooldown_remaining = self.cfg.soxs_cooldown_days
             return sells  # no point checking further
 
         # Loss-cut (more severe first)
@@ -432,12 +492,17 @@ class TradeManager:
         slice_size = total_capital / self.cfg.soxl_max_slices
         notional = slice_size * num
 
-        # Vampire injection
+        # Vampire injection (D)
         injection = 0.0
         if st.injection_budget > 0:
-            injection = st.injection_budget
+            # Cap injection by remaining slice capacity
+            max_inject = remaining * slice_size
+            injection = min(st.injection_budget, max_inject)
             notional += injection
-            st.injection_budget = 0.0
+            st.injection_budget -= injection
+            # Round residual to avoid float dust
+            if st.injection_budget < 0.01:
+                st.injection_budget = 0.0
 
         st.soxl_slices_used += num
 
@@ -482,6 +547,10 @@ class TradeManager:
         if decision.effective_state != EffectiveState.BEAR_ACTIVE:
             return []
         if st.soxs_slices_used >= self.cfg.soxs_max_slices:
+            return []
+
+        # Cooldown check — after forced max-holding close (C)
+        if st.soxs_cooldown_remaining > 0:
             return []
 
         # Allocation cap
@@ -550,6 +619,8 @@ class TradeManager:
             st.soxs_holding_days = 0
             st.soxs_loss_cut_stage = 0
             st.soxs_slices_used = 0
+            # NOTE: cooldown is NOT reset here — it persists after close.
+            # It will tick down via _update_tracking.
 
     def __repr__(self) -> str:
         return f"TradeManager(cfg={self.cfg!r})"
