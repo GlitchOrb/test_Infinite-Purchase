@@ -32,8 +32,9 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from PyQt5.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QMainWindow, QProgressBar,
-    QSizePolicy, QSpacerItem, QStackedWidget, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QMessageBox, QProgressBar, QSizePolicy, QSpacerItem, QStackedWidget,
+    QToolButton, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
 from PyQt5.QtGui import QIcon, QPixmap
@@ -56,6 +57,14 @@ from ui_theme import (
     C, F, GLOBAL_STYLE, make_badge, make_emergency_overlay,
     make_kill_button, make_primary_button, make_secondary_button,
     regime_badge,
+)
+from auth_manager import AuthManager
+from telegram_manager import TelegramManager
+from telegram_settings_store import (
+    delete_settings as delete_telegram_settings,
+    is_supported as telegram_settings_supported,
+    load_settings as load_telegram_settings,
+    save_settings as save_telegram_settings,
 )
 
 log = logging.getLogger(__name__)
@@ -114,13 +123,7 @@ def _load_tm_state(conn: sqlite3.Connection) -> TradeManagerState:
 # ======================================================================= #
 
 class LoginPage(QWidget):
-    """Initial login screen — triggers Kiwoom CommConnect().
-
-    Signals
-    -------
-    login_success()
-        Emitted after OnEventConnect returns code 0.
-    """
+    """Initial login screen — REST App Key/App Secret login."""
 
     login_success = pyqtSignal()
 
@@ -132,9 +135,8 @@ class LoginPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setAlignment(Qt.AlignCenter)
 
-        # Center card
         card = QWidget()
-        card.setFixedSize(420, 440)
+        card.setFixedSize(460, 560)
         card.setStyleSheet(f"""
             QWidget {{
                 background: {C.BG_CARD};
@@ -143,105 +145,143 @@ class LoginPage(QWidget):
             }}
         """)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(40, 30, 40, 24)
+        card_layout.setContentsMargins(34, 26, 34, 24)
         card_layout.setSpacing(10)
 
-        # App icon
         icon_label = QLabel()
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
         if os.path.exists(icon_path):
-            pixmap = QPixmap(icon_path).scaled(
-                64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
+            pixmap = QPixmap(icon_path).scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             icon_label.setPixmap(pixmap)
         icon_label.setAlignment(Qt.AlignCenter)
         icon_label.setStyleSheet("border: none;")
         card_layout.addWidget(icon_label)
 
-        card_layout.addSpacing(4)
-
-        # Logo / title
         title = QLabel("Alpha Predator")
         title.setFont(F.title())
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(f"color: {C.NAVY}; border: none;")
         card_layout.addWidget(title)
 
-        subtitle = QLabel("v4.0  —  Leveraged Sector Rotation")
+        subtitle = QLabel("v4.0 — Kiwoom REST Live / Guest Mode")
         subtitle.setFont(F.small())
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet(f"color: {C.TEXT_SUB}; border: none;")
         card_layout.addWidget(subtitle)
 
-        card_layout.addSpacing(16)
-
-        # Status label
-        self._status = QLabel("Ready to connect")
+        self._status = QLabel("Ready for REST login")
         self._status.setFont(F.body())
         self._status.setAlignment(Qt.AlignCenter)
         self._status.setStyleSheet(f"color: {C.TEXT_SUB}; border: none;")
         card_layout.addWidget(self._status)
 
-        # Progress bar (hidden until login attempt)
+        self._app_key = QLineEdit()
+        self._app_key.setPlaceholderText("App Key")
+        card_layout.addWidget(self._app_key)
+
+        self._app_secret = QLineEdit()
+        self._app_secret.setPlaceholderText("App Secret")
+        self._app_secret.setEchoMode(QLineEdit.Password)
+        card_layout.addWidget(self._app_secret)
+
+        self._account_no = QLineEdit()
+        self._account_no.setPlaceholderText("Account number")
+        card_layout.addWidget(self._account_no)
+
+        remember_row = QHBoxLayout()
+        self._remember = QCheckBox("Remember login")
+        remember_row.addWidget(self._remember)
+        self._help_btn = QToolButton()
+        self._help_btn.setText("?")
+        self._help_btn.clicked.connect(self._show_help)
+        remember_row.addStretch()
+        remember_row.addWidget(self._help_btn)
+        card_layout.addLayout(remember_row)
+
+        self._telegram_enable = QCheckBox("Enable Telegram notifications")
+        self._telegram_enable.setChecked(False)
+        card_layout.addWidget(self._telegram_enable)
+
+        self._telegram_token = QLineEdit()
+        self._telegram_token.setPlaceholderText("Telegram Bot Token")
+        self._telegram_token.setEchoMode(QLineEdit.Password)
+        card_layout.addWidget(self._telegram_token)
+
+        self._telegram_chat_id = QLineEdit()
+        self._telegram_chat_id.setPlaceholderText("Telegram Chat ID")
+        card_layout.addWidget(self._telegram_chat_id)
+
+        telegram_row = QHBoxLayout()
+        self._remember_telegram = QCheckBox("Remember settings")
+        telegram_row.addWidget(self._remember_telegram)
+        self._telegram_help_btn = QToolButton()
+        self._telegram_help_btn.setText("?")
+        self._telegram_help_btn.clicked.connect(self._show_telegram_help)
+        telegram_row.addStretch()
+        telegram_row.addWidget(self._telegram_help_btn)
+        card_layout.addLayout(telegram_row)
+
         self._progress = QProgressBar()
-        self._progress.setRange(0, 0)  # indeterminate
+        self._progress.setRange(0, 0)
         self._progress.setFixedHeight(4)
-        self._progress.setStyleSheet(f"""
-            QProgressBar {{
-                background: {C.BORDER};
-                border: none;
-                border-radius: 2px;
-            }}
-            QProgressBar::chunk {{
-                background: {C.NAVY};
-                border-radius: 2px;
-            }}
-        """)
         self._progress.hide()
         card_layout.addWidget(self._progress)
 
-        card_layout.addSpacing(8)
-
-        # Login button
-        self._btn = make_primary_button("Connect to Kiwoom")
+        self._btn = make_primary_button("Connect (REST)")
         self._btn.setFixedHeight(42)
         self._btn.clicked.connect(self._on_login_clicked)
         card_layout.addWidget(self._btn)
 
-        # Demo mode button (for testing without Kiwoom)
         self._demo_btn = make_secondary_button("Demo Mode (no broker)")
         self._demo_btn.clicked.connect(self._on_demo_clicked)
         card_layout.addWidget(self._demo_btn)
 
         card_layout.addStretch()
-
         outer.addWidget(card)
 
-        # GitHub attribution footer
         footer = QLabel('github.com/GlitchOrb/alpha-predator-leveraged-switching')
         footer.setFont(F.small())
         footer.setAlignment(Qt.AlignCenter)
         footer.setStyleSheet(f"color: {C.TEXT_MUTED}; margin-top: 8px;")
         outer.addWidget(footer)
 
-    # ------------------------------------------------------------------ #
-    #  Handlers
-    # ------------------------------------------------------------------ #
+    def _show_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "REST OpenAPI Help",
+            "1) Create Telegram Bot token via @BotFather (optional kill alerts).\n"
+            "2) Issue Kiwoom OpenAPI REST App Key/App Secret in Kiwoom developer portal.\n"
+            "3) Enter App Key, App Secret, and account number for live mode.\n"
+            "4) Use Demo Mode to run guest mode with no broker calls.",
+        )
 
     def _on_login_clicked(self) -> None:
-        self._status.setText("Connecting …")
+        app_key = self._app_key.text().strip()
+        app_secret = self._app_secret.text().strip()
+        account_no = self._account_no.text().strip()
+        if not app_key or not app_secret or not account_no:
+            self.set_status("App Key / Secret / Account are required", C.RED)
+            return
+
+        self._status.setText("Connecting (REST) …")
         self._status.setStyleSheet(f"color: {C.ORANGE}; border: none;")
         self._progress.show()
         self._btn.setEnabled(False)
-
-        # The actual CommConnect is called by MainWindow which owns KiwoomAdapter.
-        # This widget just signals the intent.
-        self.parent().parent()._begin_login()  # type: ignore
+        self.parent().parent()._begin_login(
+            app_key,
+            app_secret,
+            account_no,
+            self._remember.isChecked(),
+            self._telegram_enable.isChecked(),
+            self._telegram_token.text().strip(),
+            self._telegram_chat_id.text().strip(),
+            self._remember_telegram.isChecked(),
+        )  # type: ignore
 
     def _on_demo_clicked(self) -> None:
-        """Skip broker login and enter dashboard with demo data."""
         self._status.setText("Demo mode — no broker")
         self._status.setStyleSheet(f"color: {C.GREEN}; border: none;")
+        self.parent().parent()._begin_guest_mode()  # type: ignore
         self.login_success.emit()
 
     def set_status(self, text: str, color: str = C.TEXT_SUB) -> None:
@@ -249,6 +289,27 @@ class LoginPage(QWidget):
         self._status.setStyleSheet(f"color: {color}; border: none;")
         self._progress.hide()
         self._btn.setEnabled(True)
+
+    def set_remember_supported(self, enabled: bool) -> None:
+        self._remember.setEnabled(enabled)
+        self._remember_telegram.setEnabled(enabled)
+        if not enabled:
+            self._remember.setChecked(False)
+            self._remember.setToolTip("Remember login is supported on Windows only")
+            self._remember_telegram.setChecked(False)
+            self._remember_telegram.setToolTip("Remember settings is supported on Windows only")
+
+    def prefill_credentials(self, app_key: str, app_secret: str, account_no: str) -> None:
+        self._app_key.setText(app_key)
+        self._app_secret.setText(app_secret)
+        self._account_no.setText(account_no)
+        self._remember.setChecked(True)
+
+    def prefill_telegram(self, enabled: bool, token: str, chat_id: str) -> None:
+        self._telegram_enable.setChecked(enabled)
+        self._telegram_token.setText(token)
+        self._telegram_chat_id.setText(chat_id)
+        self._remember_telegram.setChecked(enabled)
 
 
 # ======================================================================= #
@@ -570,14 +631,25 @@ class MainWindow(QMainWindow):
         self.strategy = StrategyEngine(signal_ticker=self.cfg.signal_ticker)
         self.trade_mgr = TradeManager()
 
-        # Kiwoom adapter (may be None in demo mode)
+        # Broker client (None in guest mode)
         self.kiwoom = None
+        self.auth = AuthManager()
+        self.telegram_mgr: Optional[TelegramManager] = None
+        self._guest_mode = False
 
         # Page stack: 0=login, 1=dashboard
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
 
         self._login_page = LoginPage()
+        self._login_page.set_remember_supported(self.auth.remember_supported())
+        saved = self.auth.try_restore_saved_login()
+        if saved:
+            self._login_page.prefill_credentials(*saved)
+        telegram_saved = load_telegram_settings()
+        if telegram_saved:
+            tkn, cid, en = telegram_saved
+            self._login_page.prefill_telegram(en, tkn, cid)
         self._login_page.login_success.connect(self._on_login_success)
         self._stack.addWidget(self._login_page)
 
@@ -596,24 +668,58 @@ class MainWindow(QMainWindow):
     #  Login flow
     # ------------------------------------------------------------------ #
 
-    def _begin_login(self) -> None:
-        """Called by LoginPage when user clicks Connect."""
+    def _begin_login(
+        self,
+        app_key: str,
+        app_secret: str,
+        account_no: str,
+        remember_login: bool,
+        telegram_enabled: bool,
+        telegram_token: str,
+        telegram_chat_id: str,
+        remember_telegram: bool,
+    ) -> None:
+        """Called by LoginPage when user clicks REST connect."""
         try:
-            from kiwoom_adapter import KiwoomAdapter
-            self.kiwoom = KiwoomAdapter(self.cfg)
-            success = self.kiwoom.login(timeout_s=30)
-            if success:
-                self._login_page.set_status("Connected ✓", C.GREEN)
-                # Register chejan callback
-                self.kiwoom.on_chejan(self._on_chejan)
-                self._login_page.login_success.emit()
+            self.kiwoom = self.auth.start_live_mode(
+                app_key=app_key,
+                app_secret=app_secret,
+                account_no=account_no,
+                remember_login=remember_login,
+            )
+            self._guest_mode = False
+            object.__setattr__(self.cfg, "kiwoom_account", account_no)
+
+            self.telegram_mgr = None
+            object.__setattr__(self.cfg, "telegram_token", "")
+            object.__setattr__(self.cfg, "telegram_chat_id", "")
+            if telegram_enabled:
+                tg = TelegramManager(telegram_token, telegram_chat_id, enabled=True)
+                tg.validate_token()
+                tg.send_test_message()
+                self.telegram_mgr = tg
+                object.__setattr__(self.cfg, "telegram_token", telegram_token)
+                object.__setattr__(self.cfg, "telegram_chat_id", telegram_chat_id)
+                if remember_telegram and telegram_settings_supported():
+                    save_telegram_settings(telegram_token, telegram_chat_id, True)
             else:
-                self._login_page.set_status("Connection failed", C.RED)
-                self.kiwoom = None
+                delete_telegram_settings()
+
+            self._login_page.set_status("Connected (REST) ✓", C.GREEN)
+            self._login_page.login_success.emit()
         except Exception as e:
-            log.exception("Login error")
-            self._login_page.set_status(f"Error: {e}", C.RED)
+            self.telegram_mgr = None
+            object.__setattr__(self.cfg, "telegram_token", "")
+            object.__setattr__(self.cfg, "telegram_chat_id", "")
             self.kiwoom = None
+            self._guest_mode = False
+            self._login_page.set_status(f"Error: {e}", C.RED)
+
+    def _begin_guest_mode(self) -> None:
+        self.auth.start_guest_mode()
+        self.telegram_mgr = None
+        self.kiwoom = None
+        self._guest_mode = True
 
     @pyqtSlot()
     def _on_login_success(self) -> None:
@@ -642,12 +748,23 @@ class MainWindow(QMainWindow):
         else:
             log.info("Kill switch released via UI")
 
+    def logout_live_mode(self) -> None:
+        """Clear secure credentials/session and disable live trading."""
+        self.auth.logout()
+        self.telegram_mgr = None
+        delete_telegram_settings()
+        object.__setattr__(self.cfg, "telegram_token", "")
+        object.__setattr__(self.cfg, "telegram_chat_id", "")
+        self.kiwoom = None
+        self._guest_mode = True
+        set_emergency_stop(self.conn, True)
+
     def _cancel_all_open_orders(self) -> None:
         open_orders = get_open_orders(self.conn)
         for order in open_orders:
             bid = order.get("broker_order_id")
-            if bid and self.kiwoom:
-                self.kiwoom.cancel_order(bid, order["symbol"], order["qty"])
+            if bid and self.kiwoom and not self._guest_mode:
+                self.kiwoom.cancel_order({"order_id": bid, "symbol": order["symbol"], "qty": order["qty"]})
             update_order(self.conn, order["id"], status="CANCELLED")
         self.conn.commit()
         self._dashboard.activity.append(
@@ -668,7 +785,6 @@ class MainWindow(QMainWindow):
         trigger a dashboard refresh which redraws the chart with all
         recorded trades as markers.
         """
-        from kiwoom_adapter import ChejanData
         if data.gubun == "0" and data.status in ("체결", "전량체결"):
             insert_fill(self.conn, data.order_id, data.qty, data.price)
             side = OrderSide.BUY if "매수" in data.side else OrderSide.SELL
