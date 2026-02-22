@@ -47,9 +47,9 @@ class ChartWidget(QWidget):
 
     def paintEvent(self, event) -> None:
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#121212"))
+        p.fillRect(self.rect(), QColor("#F8FAFF"))
         if not self._candles:
-            p.setPen(QColor("#999999"))
+            p.setPen(QColor("#90A0B7"))
             p.drawText(self.rect(), Qt.AlignCenter, "No data")
             return
 
@@ -74,14 +74,14 @@ class ChartWidget(QWidget):
             yhi = main_h - ((hi - y_min) / span) * main_h
             ylo = main_h - ((lo - y_min) / span) * main_h
             up = cl >= o
-            color = QColor("#33cc66") if up else QColor("#ff5a5a")
+            color = QColor("#E24A4A") if up else QColor("#3C72E8")
             p.setPen(QPen(color, 1))
             p.drawLine(QPointF(x, yhi), QPointF(x, ylo))
             top = min(yo, yc)
             height = max(1, abs(yc - yo))
             p.fillRect(int(x - x_step * 0.3), int(top), int(x_step * 0.6), int(height), color)
 
-        overlay_colors = [QColor("#ffd166"), QColor("#4cc9f0"), QColor("#f72585")]
+        overlay_colors = [QColor("#7A5AF8"), QColor("#2F7CF6"), QColor("#00A3A3")]
         for idx, (_, vals) in enumerate(self._overlays.items()):
             color = overlay_colors[idx % len(overlay_colors)]
             p.setPen(QPen(color, 1.5))
@@ -101,7 +101,7 @@ class ChartWidget(QWidget):
                 continue
             x = m.index * x_step + x_step / 2
             y = main_h - ((m.price - y_min) / span) * main_h
-            mark_color = QColor("#00ff7f") if m.side.upper() == "BUY" else QColor("#ff1744")
+            mark_color = QColor("#D13D48") if m.side.upper() == "BUY" else QColor("#2F6BDE")
             p.setPen(QPen(mark_color, 2))
             if m.source == "LIVE":
                 p.drawEllipse(QPointF(x, y), 4, 4)
@@ -111,7 +111,7 @@ class ChartWidget(QWidget):
 
         if self._subpanels:
             panel_top = main_h + 10
-            p.setPen(QPen(QColor("#444444"), 1))
+            p.setPen(QPen(QColor("#DDE4F0"), 1))
             p.drawRect(0, panel_top, w - 1, sub_h - 1)
 
             total = len(self._subpanels)
@@ -124,7 +124,7 @@ class ChartWidget(QWidget):
                     continue
                 mn, mx = min(finite), max(finite)
                 sp = max(1e-9, mx - mn)
-                p.setPen(QPen(QColor("#9b5de5"), 1.2))
+                p.setPen(QPen(QColor("#7A5AF8"), 1.2))
                 prev = None
                 for i, v in enumerate(section):
                     if v is None:

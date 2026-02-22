@@ -123,6 +123,18 @@ class TradingScreen(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        root.addWidget(scroll)
+
+        body = QWidget()
+        scroll.setWidget(body)
+
+        root = QVBoxLayout(body)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(16)
 
@@ -153,13 +165,26 @@ class TradingScreen(QWidget):
         self.settings_btn.clicked.connect(self._open_settings)
         self.reset_paper_btn.clicked.connect(self._reset_paper_account)
 
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(10)
         for w in [QLabel("Symbol"), self.symbol_box, QLabel("Mode"), self.mode_box, self.auto_toggle, self.auto_status]:
-            header_layout.addWidget(w)
-        header_layout.addStretch()
-        header_layout.addWidget(self.et_time_label)
-        header_layout.addWidget(self.price_label)
-        header_layout.addWidget(self.settings_btn)
-        header_layout.addWidget(self.reset_paper_btn)
+            controls_row.addWidget(w)
+        controls_row.addStretch()
+
+        quote_row = QHBoxLayout()
+        quote_row.setSpacing(10)
+        quote_row.addStretch()
+        quote_row.addWidget(self.et_time_label)
+        quote_row.addWidget(self.price_label)
+        quote_row.addWidget(self.settings_btn)
+        quote_row.addWidget(self.reset_paper_btn)
+
+        header_wrap = QVBoxLayout()
+        header_wrap.setContentsMargins(0, 0, 0, 0)
+        header_wrap.setSpacing(8)
+        header_wrap.addLayout(controls_row)
+        header_wrap.addLayout(quote_row)
+        header_layout.addLayout(header_wrap, 1)
         root.addWidget(header_card)
 
         content_row = QHBoxLayout()

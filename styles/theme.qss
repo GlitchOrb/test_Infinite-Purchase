@@ -1,76 +1,86 @@
 QWidget {
-  background: #F6F8FC;
-  color: #1E2633;
+  background: #F4F6FB;
+  color: #1F2A3D;
   font-size: 12px;
-  font-family: "Segoe UI", "Noto Sans", sans-serif;
+  font-family: "Segoe UI", "Noto Sans KR", "Noto Sans", sans-serif;
 }
 
 QFrame#card, QFrame#loginCard {
   background: #FFFFFF;
-  border: 1px solid #E9EEF5;
-  border-radius: 12px;
+  border: 1px solid #E5EBF5;
+  border-radius: 16px;
 }
 QFrame#card:hover {
-  border: 1px solid #DCE5F2;
+  border: 1px solid #D8E2F2;
 }
 
 QLabel#priceLabel {
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
   padding: 0 4px;
 }
 
 QLabel#secondaryLabel {
-  color: #7F8A9B;
+  color: #7B879A;
   font-size: 11px;
 }
 
 QLabel#cardTitle {
   font-size: 13px;
   font-weight: 700;
-  color: #2B3445;
+  color: #24324B;
 }
 
 QLabel#sectionCaption {
   color: #6D7789;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
 }
 
 QPushButton, QToolButton {
-  border: 1px solid #E0E7F2;
+  border: 1px solid #DFE7F4;
   border-radius: 14px;
   background: #FFFFFF;
   padding: 8px 14px;
   min-height: 34px;
-  font-weight: 600;
+  font-weight: 700;
 }
 QPushButton:hover, QToolButton:hover {
-  background: #F4F8FF;
-  border: 1px solid #CEDBF2;
+  background: #F3F7FF;
+  border: 1px solid #CDDDF8;
 }
 QPushButton:pressed, QToolButton:pressed {
-  background: #EBF2FF;
+  background: #EAF1FF;
+}
+
+QToolButton#modeButton {
+  background: #F2F5FB;
+  color: #5F6C82;
+}
+QToolButton#modeButton:checked {
+  background: #EAF1FF;
+  color: #2156D1;
+  border: 1px solid #BED1FA;
 }
 
 QPushButton#buyButton {
-  background: #FFF0F1;
-  border: 1px solid #F6C5CB;
-  color: #C1363F;
-}
-QPushButton#buyButton:hover { background: #FFE4E7; }
-
-QPushButton#sellButton {
-  background: #EFF5FF;
-  border: 1px solid #C8DAFF;
+  background: #ECF3FF;
+  border: 1px solid #C9DBFF;
   color: #2A65EA;
 }
-QPushButton#sellButton:hover { background: #E3EDFF; }
+QPushButton#buyButton:hover { background: #E2EDFF; }
+
+QPushButton#sellButton {
+  background: #FFF1F3;
+  border: 1px solid #F7CBD1;
+  color: #CE3A49;
+}
+QPushButton#sellButton:hover { background: #FFE6EA; }
 
 QPushButton#neutralButton, QToolButton#neutralButton {
-  background: #F2F5FA;
+  background: #F3F6FC;
   color: #4B5567;
 }
 
@@ -81,7 +91,7 @@ QPushButton#presetButton {
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
   background: #FFFFFF;
-  border: 1px solid #E1E8F2;
+  border: 1px solid #E0E7F3;
   border-radius: 10px;
   min-height: 34px;
   padding: 0 10px;
@@ -93,7 +103,7 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
 QTableWidget {
   background: #FFFFFF;
   border: 1px solid #E9EEF5;
-  border-radius: 10px;
+  border-radius: 12px;
   gridline-color: #F0F4FA;
   alternate-background-color: #FBFDFF;
   selection-background-color: #EAF1FF;
