@@ -36,6 +36,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QSpacerItem, QStackedWidget, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
+from PyQt5.QtGui import QIcon, QPixmap
 
 from config import RuntimeConfig
 from db import (
@@ -114,7 +115,7 @@ class LoginPage(QWidget):
 
         # Center card
         card = QWidget()
-        card.setFixedSize(420, 380)
+        card.setFixedSize(420, 440)
         card.setStyleSheet(f"""
             QWidget {{
                 background: {C.BG_CARD};
@@ -123,8 +124,22 @@ class LoginPage(QWidget):
             }}
         """)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(40, 36, 40, 36)
-        card_layout.setSpacing(12)
+        card_layout.setContentsMargins(40, 30, 40, 24)
+        card_layout.setSpacing(10)
+
+        # App icon
+        icon_label = QLabel()
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+        if os.path.exists(icon_path):
+            pixmap = QPixmap(icon_path).scaled(
+                64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            icon_label.setPixmap(pixmap)
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("border: none;")
+        card_layout.addWidget(icon_label)
+
+        card_layout.addSpacing(4)
 
         # Logo / title
         title = QLabel("Alpha Predator")
@@ -139,7 +154,7 @@ class LoginPage(QWidget):
         subtitle.setStyleSheet(f"color: {C.TEXT_SUB}; border: none;")
         card_layout.addWidget(subtitle)
 
-        card_layout.addSpacing(20)
+        card_layout.addSpacing(16)
 
         # Status label
         self._status = QLabel("Ready to connect")
@@ -166,7 +181,7 @@ class LoginPage(QWidget):
         self._progress.hide()
         card_layout.addWidget(self._progress)
 
-        card_layout.addSpacing(10)
+        card_layout.addSpacing(8)
 
         # Login button
         self._btn = make_primary_button("Connect to Kiwoom")
@@ -182,6 +197,13 @@ class LoginPage(QWidget):
         card_layout.addStretch()
 
         outer.addWidget(card)
+
+        # GitHub attribution footer
+        footer = QLabel('github.com/GlitchOrb/alpha-predator-leveraged-switching')
+        footer.setFont(F.small())
+        footer.setAlignment(Qt.AlignCenter)
+        footer.setStyleSheet(f"color: {C.TEXT_MUTED}; margin-top: 8px;")
+        outer.addWidget(footer)
 
     # ------------------------------------------------------------------ #
     #  Handlers
@@ -307,6 +329,14 @@ class DashboardPage(QWidget):
         body.addLayout(right, stretch=1)
 
         root.addLayout(body)
+
+        # Footer
+        footer = QLabel('github.com/GlitchOrb/alpha-predator-leveraged-switching')
+        footer.setFont(F.small())
+        footer.setAlignment(Qt.AlignRight)
+        footer.setStyleSheet(f"color: {C.TEXT_MUTED}; padding-right: 4px;")
+        footer.setFixedHeight(20)
+        root.addWidget(footer)
 
     # ------------------------------------------------------------------ #
     #  Kill switch handler
@@ -495,6 +525,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Alpha Predator v4.0")
         self.setMinimumSize(1280, 820)
         self.resize(1440, 900)
+
+        # Window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         # Config + DB
         self.cfg = RuntimeConfig(
