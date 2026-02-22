@@ -75,6 +75,10 @@ class TradeManagerConfig:
     #   else      => 0.00  (should not reach here due to thresh guard)
     vampire_inject_ratio_deep: float = 0.50    # dd ≤ -50%
     vampire_inject_ratio_normal: float = 0.70  # -50% < dd ≤ -40%
+    # Reference notional used to cap persisted injection_budget.
+    # This prevents budgets from growing beyond what remaining SOXL
+    # slices can ever consume in subsequent buy cycles.
+    soxl_slice_notional: float = 2_500.0
 
     # -- Transition --
     transition_extra_slices_day2: int = 1
@@ -308,23 +312,14 @@ class TradeManager:
         else:
             ratio = self.cfg.vampire_inject_ratio_normal     # 0.70
 
-        inject_amount = realized_pnl * ratio
-
         # Cap by remaining SOXL slice capacity (D)
         remaining_slices = self.cfg.soxl_max_slices - st.soxl_slices_used
-        if remaining_slices > 0:
-            # We need a notional reference.  Use current soxl price as proxy
-            # for slice_notional.  In practice, process_day computes this as
-            # total_capital / max_slices, but we don't have total_capital here.
-            # Instead, cap by remaining_slices * soxl_price * some share count.
-            # The simpler approach: just cap inject to avoid exceeding slice
-            # capacity when consumed during the next buy cycle. The real cap
-            # will be enforced in _check_soxl_buy.
-            pass  # cap enforced in _check_soxl_buy via remaining slices
-        else:
-            inject_amount = 0.0  # no remaining slices
+        if remaining_slices <= 0:
+            return st
 
-        st.injection_budget += inject_amount
+        max_inject = remaining_slices * self.cfg.soxl_slice_notional
+        inject_amount = min(realized_pnl * ratio, max_inject)
+        st.injection_budget = min(st.injection_budget + inject_amount, max_inject)
         return st
 
     # ================================================================== #
@@ -395,63 +390,60 @@ class TradeManager:
         if not st.soxs.is_open:
             return []
 
-        sells: List[OrderIntent] = []
         dd = (soxs_price / st.soxs.avg_cost) - 1.0 if st.soxs.avg_cost > 0 else 0.0
 
         # Max-holding safety — triggers cooldown (C)
         if st.soxs_holding_days >= self.cfg.soxs_max_holding_days:
-            sells.append(OrderIntent(
+            st.soxs_forced_close = True
+            st.soxs_cooldown_remaining = self.cfg.soxs_cooldown_days
+            return [OrderIntent(
                 symbol="SOXS", side=OrderSide.SELL, qty=st.soxs.qty,
                 notional=0, order_type_hint="MARKET", limit_price_hint=None,
                 reason="MAX_HOLDING_EXIT", priority=30,
-            ))
-            st.soxs_forced_close = True
-            st.soxs_cooldown_remaining = self.cfg.soxs_cooldown_days
-            return sells  # no point checking further
+            )]
 
         # Loss-cut (more severe first)
         if dd <= self.cfg.soxs_loss_cut_2 and st.soxs_loss_cut_stage < 2:
             st.soxs_loss_cut_stage = 2
-            sells.append(OrderIntent(
+            return [OrderIntent(
                 symbol="SOXS", side=OrderSide.SELL, qty=st.soxs.qty,
                 notional=0, order_type_hint="MARKET", limit_price_hint=None,
                 reason="LOSS_CUT_ALL", priority=30,
-            ))
-            return sells
+            )]
         if dd <= self.cfg.soxs_loss_cut_1 and st.soxs_loss_cut_stage == 0:
             sell_qty = max(1, st.soxs.qty // 2)
             st.soxs_loss_cut_stage = 1
-            sells.append(OrderIntent(
+            return [OrderIntent(
                 symbol="SOXS", side=OrderSide.SELL, qty=sell_qty,
                 notional=0, order_type_hint="MARKET", limit_price_hint=None,
                 reason="LOSS_CUT_50PCT", priority=35,
-            ))
+            )]
 
         # Take-profit
         if dd >= self.cfg.soxs_take_profit:
-            sells.append(OrderIntent(
+            return [OrderIntent(
                 symbol="SOXS", side=OrderSide.SELL, qty=st.soxs.qty,
                 notional=0, order_type_hint="MARKET", limit_price_hint=None,
                 reason="TAKE_PROFIT", priority=40,
-            ))
+            )]
 
         # Transition-specific sells
         if decision.transition_active:
             if decision.transition_day == 2:
                 sell_qty = max(1, st.soxs.qty // 2)
-                sells.append(OrderIntent(
+                return [OrderIntent(
                     symbol="SOXS", side=OrderSide.SELL, qty=sell_qty,
                     notional=0, order_type_hint="MARKET", limit_price_hint=None,
                     reason="TRANSITION_SELL_50PCT", priority=50,
-                ))
+                )]
             elif decision.transition_day >= 3:
-                sells.append(OrderIntent(
+                return [OrderIntent(
                     symbol="SOXS", side=OrderSide.SELL, qty=st.soxs.qty,
                     notional=0, order_type_hint="MARKET", limit_price_hint=None,
                     reason="TRANSITION_SELL_ALL", priority=50,
-                ))
+                )]
 
-        return sells
+        return []
 
     # ================================================================== #
     #  Internals — SOXL buy logic  (A + D)

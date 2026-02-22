@@ -136,3 +136,89 @@ pytest test_strategy_engine.py test_trade_manager.py test_integration.py -v
 ## License
 
 MIT — not financial or legal advice.
+
+## Runtime Rules Clarifications
+
+### Regime Scoring Formula
+- `L = 1` when `close > SMA200`, else `0`
+- `M = 1` when `SMA50 > SMA200`, else `0`
+- `A = 1` when `12M momentum > 0`, else `0`
+- `score = L + M + A` (0..3)
+
+### SOXS Cooldown Rule
+After a `MAX_HOLDING_EXIT` on SOXS, runtime sets `soxs_cooldown_remaining=soxs_cooldown_days`.
+While cooldown is positive, SOXS buy intents are suppressed.
+
+### Carry Budget Reset Rule
+`injection_budget` is bounded by remaining SOXL slice capacity:
+
+`max_inject = (soxl_max_slices - soxl_slices_used) * soxl_slice_notional`
+
+On each realized SOXS profit event, the budget update is capped so it cannot grow unbounded.
+
+## Selected Configuration Parameters
+- `RuntimeConfig.reconcile_interval_min`: periodic reconcile cadence.
+- `RuntimeConfig.kill_resume_passcode`: Telegram resume passcode.
+- `TradeManagerConfig.soxs_cooldown_days`: SOXS post-forced-close buy cooldown.
+- `TradeManagerConfig.soxl_slice_notional`: cap reference for persisted injection budget.
+
+## Deployment (FastAPI + Uvicorn + systemd)
+1. Install dependencies: `pip install fastapi uvicorn[standard]`
+2. Run API server: `uvicorn api_server:app --host 0.0.0.0 --port 8000`
+3. Example systemd service:
+
+```ini
+[Unit]
+Description=Alpha Predator API
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/alpha-predator
+ExecStart=/usr/bin/uvicorn api_server:app --host 0.0.0.0 --port 8000
+Restart=always
+User=trader
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Architecture Diagram
+
+```mermaid
+flowchart LR
+  S[StrategyEngine] --> T[TradeManager]
+  T --> R[Runtime Scheduler/Reconcile]
+  R --> DB[(SQLite)]
+  R --> B[Broker Adapter]
+  R --> K[Telegram Kill Switch]
+  A[FastAPI api_server] --> DB
+  A --> R
+```
+
+## Sequence Chart (Resume/Reconcile Safety)
+
+```mermaid
+sequenceDiagram
+  participant TG as Telegram
+  participant KS as KillSwitch
+  participant RT as Runtime
+  participant DB as SQLite
+
+  TG->>KS: /resume <passcode>
+  KS->>RT: _handle_resume()
+  RT->>RT: _reconcile(is_startup=False)
+  alt mismatch remains
+    RT->>DB: emergency_stop=True
+    RT->>KS: send_alert("RESUME DENIED")
+  else clean
+    RT->>DB: emergency_stop=False
+    RT->>KS: send_alert("RESUME successful")
+  end
+```
+
+## Risk & Operational Notes
+- Never clear emergency stop without a successful reconcile.
+- Treat balance fetch failure as a critical fault: stop buys and raise alert.
+- Avoid logging secrets (Telegram passcodes, raw sensitive payloads).
+- Keep SOXS exits single-intent per cycle to prevent duplicate sells.

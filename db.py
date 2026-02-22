@@ -100,6 +100,13 @@ CREATE TABLE IF NOT EXISTS system_state (
     value           TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+-- Alert settings (telegram/runtime thresholds and schedules)
+CREATE TABLE IF NOT EXISTS alerts (
+    key             TEXT PRIMARY KEY,
+    value           TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
 """
 
 
@@ -287,6 +294,28 @@ def get_latest_regime(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
         return None
     cols = [d[0] for d in conn.execute("SELECT * FROM regime_history LIMIT 0").description]
     return dict(zip(cols, row))
+
+
+# ======================================================================= #
+#  Alerts config
+# ======================================================================= #
+
+def set_alert(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO alerts (key, value, updated_at) VALUES (?, ?, ?)",
+        (key, value, _now()),
+    )
+    conn.commit()
+
+
+def get_alert(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM alerts WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def get_all_alerts(conn: sqlite3.Connection) -> Dict[str, str]:
+    rows = conn.execute("SELECT key, value FROM alerts").fetchall()
+    return {k: v for k, v in rows}
 
 
 # ======================================================================= #

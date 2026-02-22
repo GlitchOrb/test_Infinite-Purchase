@@ -414,6 +414,17 @@ class TestTransition:
         intents, _ = mgr.process_day(dec, 50.0, 30.0, 100_000, st)
         soxs_sells = [i for i in intents if i.symbol == "SOXS" and i.side == OrderSide.SELL]
         assert any(i.reason == "TRANSITION_SELL_ALL" for i in soxs_sells)
+    def test_take_profit_prevents_duplicate_transition_sell(self, mgr):
+        dec = _decision(state=EffectiveState.TRANSITION,
+                        transition_active=True, transition_day=3)
+        st = _state_with_soxs(qty=50, avg_cost=30.0)
+        tp_price = 30.0 * (1 + mgr.cfg.soxs_take_profit + 0.01)
+        intents, _ = mgr.process_day(dec, 50.0, tp_price, 100_000, st)
+        soxs_sells = [i for i in intents if i.symbol == "SOXS" and i.side == OrderSide.SELL]
+        assert len(soxs_sells) == 1
+        assert soxs_sells[0].reason == "TAKE_PROFIT"
+
+
 
 
 # ===================================================================== #
@@ -472,19 +483,19 @@ class TestVampireRebalance:
         )
         assert new_st.injection_budget == 0.0  # no remaining slices
 
-    def test_injection_budget_persists(self, mgr):
-        """Budget accumulates across multiple calls."""
+    def test_injection_budget_persists_with_cap(self, mgr):
+        """Sequential injections never exceed remaining-slice cap."""
         st = _state_with_soxl(qty=100, avg_cost=100.0)
         soxl_price = 55.0
+        cap = (mgr.cfg.soxl_max_slices - st.soxl_slices_used) * mgr.cfg.soxl_slice_notional
         st1 = mgr.on_realized_pnl(
-            "SOXS", 500.0, EffectiveState.BEAR_ACTIVE, soxl_price, st,
+            "SOXS", 50_000.0, EffectiveState.BEAR_ACTIVE, soxl_price, st,
         )
         st2 = mgr.on_realized_pnl(
-            "SOXS", 300.0, EffectiveState.BEAR_ACTIVE, soxl_price, st1,
+            "SOXS", 50_000.0, EffectiveState.BEAR_ACTIVE, soxl_price, st1,
         )
-        ratio = mgr.cfg.vampire_inject_ratio_normal  # 0.70
-        expected = 500.0 * ratio + 300.0 * ratio
-        assert st2.injection_budget == pytest.approx(expected)
+        assert st1.injection_budget <= cap
+        assert st2.injection_budget == pytest.approx(cap)
 
     def test_injection_drain_during_buy(self, mgr):
         """Injection budget properly consumed during SOXL buy."""

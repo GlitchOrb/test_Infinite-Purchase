@@ -253,7 +253,8 @@ class DashboardPage(QWidget):
         root.setSpacing(12)
 
         # ===== HEADER ===== #
-        header = QHBoxLayout()
+        self._header_layout = QHBoxLayout()
+        header = self._header_layout
         header.setSpacing(14)
 
         title = QLabel("Alpha Predator")
@@ -360,25 +361,21 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------ #
 
     def update_regime(self, state: str, score: int) -> None:
-        # Replace badge
-        layout = self._regime_badge.parent()
-        if layout is None:
+        """Replace regime badge in-place and update score badge text."""
+        if not self._header_layout or not self._regime_badge:
             return
+
         old = self._regime_badge
+        idx = self._header_layout.indexOf(old)
+        if idx < 0:
+            return
+
         new = regime_badge(state)
-        # Find and replace in parent layout
-        for i in range(self.layout().count()):
-            item = self.layout().itemAt(i)
-            if item and item.layout():
-                for j in range(item.layout().count()):
-                    w = item.layout().itemAt(j)
-                    if w and w.widget() == old:
-                        item.layout().removeWidget(old)
-                        old.deleteLater()
-                        item.layout().insertWidget(j, new)
-                        self._regime_badge = new
-                        break
-        # Update score
+        self._header_layout.removeWidget(old)
+        old.deleteLater()
+        self._header_layout.insertWidget(idx, new)
+        self._regime_badge = new
+
         self._score_badge.setText(f"{score} / 3")
 
     # ------------------------------------------------------------------ #
@@ -483,7 +480,7 @@ class DashboardPage(QWidget):
             TradeMarker(x=80, price=price[80], symbol="SOXL", side="BUY",
                         reason="Avg down -8%"),
             TradeMarker(x=120, price=price[120], symbol="SOXL", side="SELL",
-                        reason="Trailing -15%"),
+                        reason="📉 트레일링 스탑 조건 충족 — 부분 청산 실행"),
             TradeMarker(x=150, price=price[150], symbol="SOXS", side="BUY",
                         reason="Bear regime entry"),
             TradeMarker(x=170, price=price[170], symbol="SOXS", side="SELL",
@@ -702,7 +699,7 @@ class MainWindow(QMainWindow):
                                    str(tm_state.injection_budget))
                         self.conn.commit()
                         self._dashboard.activity.append(
-                            f"Vampire inject: +${realized:.2f}"
+                            f"🩸 수익 재투입 실행 — SOXL 평단가 하향 조정 (+${realized:.2f})"
                         )
 
             # Refresh UI

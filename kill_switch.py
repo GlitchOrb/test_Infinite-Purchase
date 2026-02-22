@@ -133,9 +133,10 @@ class KillSwitch:
             parts = text.split(maxsplit=1)
             passcode = parts[1].strip() if len(parts) > 1 else ""
             if passcode == self.cfg.kill_resume_passcode:
-                log.info("RESUME command accepted via Telegram")
-                self.send_alert("🟢 RESUME accepted — system re-enabled")
+                log.info("RESUME command accepted (passcode verified)")
+                self.send_alert("🟢 RESUME accepted — reconciling before enable")
                 if self._on_resume:
                     self._on_resume()
             else:
+                log.warning("RESUME command rejected (invalid passcode)")
                 self.send_alert("❌ RESUME rejected — incorrect passcode")
