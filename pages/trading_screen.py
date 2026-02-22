@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
 
 from auto.auto_trading_controller import AutoTradingController
 from broker.base import BrokerBase, Quote
-from broker.kiwoom_rest_broker import KiwoomRestBroker
+from broker.kiwoom_rest_broker import KiwoomRestBroker, LiveBrokerError
 from broker.paper_broker import PaperBroker
 from conditions.condition_engine import ConditionEngine
 from db import is_emergency_stop, set_emergency_stop, set_system
@@ -84,6 +84,8 @@ class TradingScreen(QWidget):
 
         self.live_broker: Optional[BrokerBase] = None
         self.paper_broker = PaperBroker(conn)
+        self._manual_order_payload: Optional[Dict[str, Any]] = None
+        self._live_disabled_reason: str = ""
 
         self.indicators = {
             "SMA50": SMAIndicator(50),
@@ -278,11 +280,16 @@ class TradingScreen(QWidget):
         elif key == "account":
             account, pos = payload  # type: ignore[misc]
             self._render_account(account, pos)
+        elif key == "manual_order":
+            result = payload  # type: ignore[assignment]
+            self.order_panel.set_status(f"ORDER_RESULT {result.get('status')} {result.get('order_id')}")
         self._load_tables()
         self._refresh_condition_tables()
 
     def _on_worker_error(self, key: str, msg: str) -> None:
         self.order_panel.set_status(f"{key} error: {msg}")
+        if key == "manual_order":
+            return
         if self.mode == self.MODE_LIVE:
             set_emergency_stop(self.conn, True)
             self.auto_ctl.set_enabled(False)
@@ -291,32 +298,39 @@ class TradingScreen(QWidget):
                 self.alert(f"🚨 {key} failure: {msg}")
 
     def _resolve_market_broker(self) -> BrokerBase:
-        if self.mode == self.MODE_GUEST:
-            raise RuntimeError("Guest mode broker calls are disabled")
+        if self.mode in {self.MODE_GUEST, self.MODE_PAPER}:
+            return self.paper_broker
+        if self._live_disabled_reason:
+            raise LiveBrokerError(self._live_disabled_reason)
         if not self.auth.client:
-            raise RuntimeError("Kiwoom REST session unavailable")
-        return KiwoomRestBroker(self.auth.client, self.cfg.kiwoom_account)
+            raise LiveBrokerError("Live disabled: authentication session unavailable")
+        try:
+            return KiwoomRestBroker(self.auth.client, self.cfg.kiwoom_account)
+        except Exception as exc:
+            self._live_disabled_reason = str(exc)
+            raise LiveBrokerError(self._live_disabled_reason)
 
     def _resolve_exec_broker_or_none(self) -> Optional[BrokerBase]:
+        if self.mode == self.MODE_GUEST:
+            return None
         if self.mode == self.MODE_PAPER:
             return self.paper_broker
-        if self.mode == self.MODE_LIVE:
-            if not self.auth.client:
-                return None
+        try:
             if not self.live_broker:
-                self.live_broker = KiwoomRestBroker(self.auth.client, self.cfg.kiwoom_account)
+                self.live_broker = self._resolve_market_broker()
             return self.live_broker
-        return None
+        except Exception as exc:
+            self._live_disabled_reason = str(exc)
+            self.order_panel.set_status(self._live_disabled_reason)
+            return None
 
     def _fetch_quote(self) -> Quote:
-        if self.mode == self.MODE_GUEST:
-            raise RuntimeError("Guest mode quote polling disabled")
-        return self._resolve_market_broker().get_quote(self.symbol)
+        b = self._resolve_market_broker()
+        return b.get_quote(self.symbol)
 
     def _fetch_ohlcv(self) -> List[Dict[str, Any]]:
-        if self.mode == self.MODE_GUEST:
-            return []
-        return self._resolve_market_broker().get_ohlcv(self.symbol, 300)
+        b = self._resolve_market_broker()
+        return b.get_ohlcv(self.symbol, 300)
 
     def _fetch_account_positions(self):
         if self.mode == self.MODE_GUEST:
@@ -336,6 +350,9 @@ class TradingScreen(QWidget):
 
     def _on_mode_changed(self, mode: str) -> None:
         self.mode = mode
+        if mode != self.MODE_LIVE:
+            self._live_disabled_reason = ""
+            self.live_broker = None
         self.conn.execute("INSERT OR REPLACE INTO ui_settings(key, value) VALUES(?,?)", ("last_mode", mode))
         self.conn.commit()
         self.reset_paper_btn.setEnabled(mode == self.MODE_PAPER)
@@ -369,28 +386,31 @@ class TradingScreen(QWidget):
             QMessageBox.warning(self, "Guest", "Trading disabled in Guest mode")
             return
 
-        try:
-            qty = int(payload["qty"])
-            side = str(payload["side"])
-            order_type = "MARKET" if payload["action_type"] == "MARKET" else str(payload["order_type"])
-            limit_price = payload.get("limit_price")
+        self._manual_order_payload = dict(payload)
+        self._run_async("manual_order", self._execute_manual_order)
 
-            if self.mode == self.MODE_PAPER:
-                result = self.paper_broker.place_order(self.symbol, side, qty, order_type, limit_price)
-            else:
-                broker = self._resolve_exec_broker_or_none()
-                if not broker:
-                    raise RuntimeError("Live broker unavailable")
-                result = broker.place_order(self.symbol, side, qty, order_type, limit_price)
-                self.conn.execute(
-                    "INSERT INTO live_orders(order_id, symbol, side, qty, status, created_at) VALUES(?,?,?,?,?,?)",
-                    (result.get("order_id", ""), self.symbol, side, qty, result.get("status", "SUBMITTED"), datetime.utcnow().isoformat()),
-                )
-                self.conn.commit()
-                self._reconcile_live_gate()
-            self.order_panel.set_status(f"ORDER_RESULT {result.get('status')} {result.get('order_id')}")
-        except Exception as exc:
-            self._fail_safe(f"ORDER_REQUEST failed: {exc}")
+    def _execute_manual_order(self) -> Dict[str, Any]:
+        payload = dict(self._manual_order_payload or {})
+        qty = int(payload["qty"])
+        side = str(payload["side"])
+        order_type = "MARKET" if payload["action_type"] == "MARKET" else str(payload["order_type"])
+        limit_price = payload.get("limit_price")
+
+        if self.mode == self.MODE_PAPER:
+            return self.paper_broker.place_order(self.symbol, side, qty, order_type, limit_price)
+
+        broker = self._resolve_exec_broker_or_none()
+        if not broker:
+            raise RuntimeError(self._live_disabled_reason or "Live broker unavailable")
+
+        result = broker.place_order(self.symbol, side, qty, order_type, limit_price)
+        self.conn.execute(
+            "INSERT INTO live_orders(order_id, symbol, side, qty, status, created_at) VALUES(?,?,?,?,?,?)",
+            (result.get("order_id", ""), self.symbol, side, qty, result.get("status", "SUBMITTED"), datetime.utcnow().isoformat()),
+        )
+        self.conn.commit()
+        self._reconcile_live_gate()
+        return result
 
     def _create_condition(self) -> None:
         if self.mode == self.MODE_GUEST:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -24,6 +25,12 @@ from config import RuntimeConfig
 from db import init_db, open_db
 from db_migrations import run_migrations
 from pages.trading_screen import TradingScreen
+from secrets_store_windows import (
+    delete_telegram_credentials,
+    is_remember_supported,
+    load_telegram_credentials,
+    save_telegram_credentials,
+)
 from telegram_manager import TelegramManager
 from ui_theme import GLOBAL_STYLE
 
@@ -31,7 +38,8 @@ log = logging.getLogger(__name__)
 
 
 class LoginPage(QWidget):
-    login_success = pyqtSignal()
+    login_requested = pyqtSignal(str, str, str, bool, bool, str, str, bool)
+    guest_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -102,8 +110,13 @@ class LoginPage(QWidget):
             "Create bot at @BotFather (/newbot), copy token, then get chat id from your bot conversation.",
         )
 
+    def set_saved_telegram_loaded(self) -> None:
+        self.telegram_enabled.setChecked(True)
+        self.telegram_remember.setChecked(True)
+        self.status.setText("Loaded saved Telegram config")
+
     def _do_live(self) -> None:
-        self.parent().parent().begin_live(  # type: ignore[attr-defined]
+        self.login_requested.emit(
             self.app_key.text().strip(),
             self.app_secret.text().strip(),
             self.account_no.text().strip(),
@@ -115,7 +128,7 @@ class LoginPage(QWidget):
         )
 
     def _do_demo(self) -> None:
-        self.parent().parent().begin_guest()  # type: ignore[attr-defined]
+        self.guest_requested.emit()
 
 
 class MainWindow(QMainWindow):
@@ -124,10 +137,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Trading Platform")
         self.resize(1600, 950)
 
+        self._load_endpoint_mapping_from_file_if_needed()
+
         self.cfg = RuntimeConfig(
             kiwoom_account=os.environ.get("KIWOOM_ACCOUNT", ""),
-            telegram_token=os.environ.get("TELEGRAM_TOKEN", ""),
-            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+            telegram_token="",
+            telegram_chat_id="",
         )
         self.conn = open_db(self.cfg.db_path)
         init_db(self.conn)
@@ -140,6 +155,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
 
         self.login_page = LoginPage()
+        self.login_page.login_requested.connect(self.begin_live)
+        self.login_page.guest_requested.connect(self.begin_guest)
         self.stack.addWidget(self.login_page)
 
         self.trading_screen = TradingScreen(
@@ -150,11 +167,48 @@ class MainWindow(QMainWindow):
         )
         self.stack.addWidget(self.trading_screen)
 
+        self._restore_saved_login()
+        self._restore_saved_telegram()
+
         self.stack.setCurrentWidget(self.login_page)
+
+    def _restore_saved_login(self) -> None:
+        saved = self.auth.try_restore_saved_login()
+        if not saved:
+            return
+        app_key, app_secret, account_no = saved
+        self.login_page.app_key.setText(app_key)
+        self.login_page.app_secret.setText(app_secret)
+        self.login_page.account_no.setText(account_no)
+        self.login_page.remember.setChecked(True)
+
+    def _restore_saved_telegram(self) -> None:
+        saved = load_telegram_credentials()
+        if not saved:
+            return
+        token, chat_id = saved
+        self.login_page.telegram_token.setText(token)
+        self.login_page.telegram_chat.setText(chat_id)
+        self.login_page.set_saved_telegram_loaded()
+
+    def _load_endpoint_mapping_from_file_if_needed(self) -> None:
+        if os.environ.get("KIWOOM_REST_ENDPOINTS_JSON", "").strip():
+            return
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_endpoints.json")
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                os.environ["KIWOOM_REST_ENDPOINTS_JSON"] = json.dumps(data)
+        except Exception:
+            log.warning("Invalid config_endpoints.json; ignoring", exc_info=True)
 
     def begin_guest(self) -> None:
         self.auth.start_guest_mode()
         self.telegram_mgr = None
+        delete_telegram_credentials()
         self.stack.setCurrentWidget(self.trading_screen)
         self.trading_screen.mode_box.setCurrentText("Guest")
 
@@ -172,17 +226,19 @@ class MainWindow(QMainWindow):
         try:
             self.auth.start_live_mode(app_key, app_secret, account_no, remember_login)
             object.__setattr__(self.cfg, "kiwoom_account", account_no)
+
             if tg_enabled:
                 tg = TelegramManager(tg_token, tg_chat, enabled=True)
                 tg.validate_token()
                 tg.send_test_message()
                 self.telegram_mgr = tg
-                object.__setattr__(self.cfg, "telegram_token", tg_token)
-                object.__setattr__(self.cfg, "telegram_chat_id", tg_chat)
+                if tg_remember and is_remember_supported():
+                    save_telegram_credentials(tg_token, tg_chat)
+                else:
+                    delete_telegram_credentials()
             else:
                 self.telegram_mgr = None
-                object.__setattr__(self.cfg, "telegram_token", "")
-                object.__setattr__(self.cfg, "telegram_chat_id", "")
+                delete_telegram_credentials()
 
             self.stack.setCurrentWidget(self.trading_screen)
             self.trading_screen.mode_box.setCurrentText("Paper")
