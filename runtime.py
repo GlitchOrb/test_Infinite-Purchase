@@ -306,8 +306,10 @@ class Runtime:
         soxl_px = self._fetch_current_price(self.cfg.exec_bull)
         soxs_px = self._fetch_current_price(self.cfg.exec_bear)
 
-        # TODO: fetch actual total capital from broker
-        total_capital = 100_000  # placeholder
+        total_capital = self._get_total_capital()
+        if total_capital <= 0:
+            log.error("Skipping daily buy due to invalid total capital")
+            return
 
         intents, new_state = self.trade_mgr.process_day(
             decision, soxl_px, soxs_px, total_capital, tm_state,
@@ -581,15 +583,55 @@ class Runtime:
 
     def _handle_resume(self) -> None:
         self._reconcile(is_startup=False)
-        if not is_emergency_stop(self.conn):
-            log.info("Resume after reconcile — already clean")
+        if is_emergency_stop(self.conn):
+            log.warning("Reconcile found mismatch — resume DENIED")
+            if self.kill_sw:
+                self.kill_sw.send_alert("RESUME DENIED — mismatch present")
             return
-        # If reconcile passed (no new emergency), clear stop
-        # Note: _reconcile sets emergency_stop on mismatch,
-        # so if we reach here and it's still True, reconcile was OK.
+
         set_emergency_stop(self.conn, False)
+        log.info("Resume successful after reconcile")
         if self.kill_sw:
-            self.kill_sw.send_alert("✅ System resumed after successful reconcile")
+            self.kill_sw.send_alert("RESUME successful after reconcile")
+
+    def _get_total_capital(self) -> float:
+        """Fetch total account capital and fail-safe on invalid values."""
+        try:
+            capital = self._fetch_account_balance()
+            if capital <= 0:
+                raise ValueError(f"Non-positive balance returned: {capital}")
+            return capital
+        except Exception as exc:
+            log.critical("Failed to fetch account capital: %s", exc)
+            set_emergency_stop(self.conn, True)
+            if self.kill_sw:
+                self.kill_sw.send_alert("🚨 CAPITAL FETCH FAILED — emergency stop")
+            return 0.0
+
+    def _fetch_account_balance(self) -> float:
+        """Best-effort account balance fetch from broker.
+
+        Currently approximates equity using holdings cost basis until a
+        dedicated balance TR endpoint is wired.
+        """
+        if not self.kiwoom:
+            raise RuntimeError("Kiwoom not connected")
+        holdings = self.kiwoom.get_holdings()
+        return float(sum(h.get("qty", 0) * h.get("avg_cost", 0.0) for h in holdings))
+
+
+    def handle_kill_command(self) -> None:
+        """Public kill-switch entry point for external controllers."""
+        self._handle_kill()
+
+    def handle_resume(self, passcode: str) -> tuple[bool, str]:
+        """Public resume entry point with passcode verification."""
+        if passcode != self.cfg.kill_resume_passcode:
+            return False, "Resume denied — incorrect passcode."
+        self._handle_resume()
+        if is_emergency_stop(self.conn):
+            return False, "Resume denied — reconcile mismatch."
+        return True, "Resume accepted"
 
     def _cancel_all_open_orders(self) -> None:
         open_orders = get_open_orders(self.conn)

@@ -253,7 +253,8 @@ class DashboardPage(QWidget):
         root.setSpacing(12)
 
         # ===== HEADER ===== #
-        header = QHBoxLayout()
+        self._header_layout = QHBoxLayout()
+        header = self._header_layout
         header.setSpacing(14)
 
         title = QLabel("Alpha Predator")
@@ -360,25 +361,21 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------ #
 
     def update_regime(self, state: str, score: int) -> None:
-        # Replace badge
-        layout = self._regime_badge.parent()
-        if layout is None:
+        """Replace regime badge in-place and update score badge text."""
+        if not self._header_layout or not self._regime_badge:
             return
+
         old = self._regime_badge
+        idx = self._header_layout.indexOf(old)
+        if idx < 0:
+            return
+
         new = regime_badge(state)
-        # Find and replace in parent layout
-        for i in range(self.layout().count()):
-            item = self.layout().itemAt(i)
-            if item and item.layout():
-                for j in range(item.layout().count()):
-                    w = item.layout().itemAt(j)
-                    if w and w.widget() == old:
-                        item.layout().removeWidget(old)
-                        old.deleteLater()
-                        item.layout().insertWidget(j, new)
-                        self._regime_badge = new
-                        break
-        # Update score
+        self._header_layout.removeWidget(old)
+        old.deleteLater()
+        self._header_layout.insertWidget(idx, new)
+        self._regime_badge = new
+
         self._score_badge.setText(f"{score} / 3")
 
     # ------------------------------------------------------------------ #
