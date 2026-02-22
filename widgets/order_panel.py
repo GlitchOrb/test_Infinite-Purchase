@@ -8,7 +8,6 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -29,16 +28,25 @@ class OrderPanel(QWidget):
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(12)
+
         tabs = QTabWidget()
+        tabs.setObjectName("orderTabs")
         root.addWidget(tabs)
 
         general = QWidget()
+        quick = QWidget()
+        condition = QWidget()
         tabs.addTab(general, "일반주문")
-        tabs.addTab(QWidget(), "간편주문")
-        tabs.addTab(QWidget(), "조건주문")
+        tabs.addTab(quick, "간편주문")
+        tabs.addTab(condition, "조건주문")
 
         layout = QVBoxLayout(general)
+        layout.setSpacing(12)
         form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
 
         self.side_box = QComboBox()
         self.side_box.addItems(["BUY", "SELL"])
@@ -64,29 +72,49 @@ class OrderPanel(QWidget):
         form.addRow("Quantity Mode", self.qty_mode_box)
         form.addRow("Quantity", self.qty_spin)
         form.addRow("Limit Price", self.limit_price_spin)
-
         layout.addLayout(form)
 
-        presets_box = QGroupBox("Presets")
-        presets_layout = QGridLayout(presets_box)
+        presets_layout = QGridLayout()
+        presets_layout.setHorizontalSpacing(8)
         for i, val in enumerate([1, 10, 100, 0]):
             txt = "Max" if val == 0 else str(val)
             btn = QPushButton(txt)
+            btn.setObjectName("presetButton")
             btn.clicked.connect(lambda _, v=val: self._set_preset(v))
             presets_layout.addWidget(btn, 0, i)
-        layout.addWidget(presets_box)
+        layout.addLayout(presets_layout)
 
-        btn_row = QHBoxLayout()
+        btn_row_1 = QHBoxLayout()
+        btn_row_1.setSpacing(8)
         self.btn_curr_buy = QPushButton("현재가 매수")
         self.btn_curr_sell = QPushButton("현재가 매도")
+        self.btn_curr_buy.setObjectName("buyButton")
+        self.btn_curr_sell.setObjectName("sellButton")
+        btn_row_1.addWidget(self.btn_curr_buy)
+        btn_row_1.addWidget(self.btn_curr_sell)
+        layout.addLayout(btn_row_1)
+
+        btn_row_2 = QHBoxLayout()
+        btn_row_2.setSpacing(8)
         self.btn_mkt_buy = QPushButton("시장가 매수")
         self.btn_mkt_sell = QPushButton("시장가 매도")
-        for b in [self.btn_curr_buy, self.btn_curr_sell, self.btn_mkt_buy, self.btn_mkt_sell]:
-            btn_row.addWidget(b)
-        layout.addLayout(btn_row)
+        self.btn_mkt_buy.setObjectName("buyButton")
+        self.btn_mkt_sell.setObjectName("sellButton")
+        btn_row_2.addWidget(self.btn_mkt_buy)
+        btn_row_2.addWidget(self.btn_mkt_sell)
+        layout.addLayout(btn_row_2)
 
         self.btn_cancel_all = QPushButton("전체취소")
+        self.btn_cancel_all.setObjectName("neutralButton")
         layout.addWidget(self.btn_cancel_all)
+
+        quick_layout = QVBoxLayout(quick)
+        quick_layout.addWidget(QLabel("간편주문 프리셋은 일반주문 설정과 동일하게 동작합니다."))
+        quick_layout.addStretch(1)
+
+        condition_layout = QVBoxLayout(condition)
+        condition_layout.addWidget(QLabel("조건주문은 우측 조건주문 패널과 연동됩니다."))
+        condition_layout.addStretch(1)
 
         self.btn_curr_buy.clicked.connect(lambda: self._emit_order("BUY", "LIMIT_CURRENT"))
         self.btn_curr_sell.clicked.connect(lambda: self._emit_order("SELL", "LIMIT_CURRENT"))
@@ -95,6 +123,7 @@ class OrderPanel(QWidget):
         self.btn_cancel_all.clicked.connect(self.cancel_all_requested.emit)
 
         self.status = QLabel("Ready")
+        self.status.setObjectName("secondaryLabel")
         layout.addWidget(self.status)
 
     def set_manual_enabled(self, enabled: bool) -> None:

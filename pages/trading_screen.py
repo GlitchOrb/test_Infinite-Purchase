@@ -10,8 +10,8 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -118,8 +118,14 @@ class TradingScreen(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
 
-        header = QHBoxLayout()
+        header_card = self._card()
+        header_layout = QHBoxLayout(header_card)
+        header_layout.setContentsMargins(16, 12, 16, 12)
+        header_layout.setSpacing(12)
+
         self.symbol_box = QComboBox()
         self.symbol_box.addItems(["SOXL", "SOXS", "SOXX"])
         self.symbol_box.currentTextChanged.connect(self._on_symbol_changed)
@@ -128,11 +134,14 @@ class TradingScreen(QWidget):
         self.mode_box.currentTextChanged.connect(self._on_mode_changed)
 
         self.et_time_label = QLabel("ET --:--:--")
+        self.et_time_label.setObjectName("secondaryLabel")
         self.price_label = QLabel("Price --")
+        self.price_label.setObjectName("priceLabel")
 
         self.auto_toggle = QCheckBox("Auto Trading")
         self.auto_toggle.toggled.connect(self._on_auto_toggle)
         self.auto_status = QLabel("OFF")
+        self.auto_status.setObjectName("secondaryLabel")
 
         self.settings_btn = QPushButton("Settings")
         self.reset_paper_btn = QPushButton("Reset Paper Account")
@@ -140,18 +149,24 @@ class TradingScreen(QWidget):
         self.reset_paper_btn.clicked.connect(self._reset_paper_account)
 
         for w in [QLabel("Symbol"), self.symbol_box, QLabel("Mode"), self.mode_box, self.auto_toggle, self.auto_status]:
-            header.addWidget(w)
-        header.addStretch()
-        header.addWidget(self.et_time_label)
-        header.addWidget(self.price_label)
-        header.addWidget(self.settings_btn)
-        header.addWidget(self.reset_paper_btn)
-        root.addLayout(header)
+            header_layout.addWidget(w)
+        header_layout.addStretch()
+        header_layout.addWidget(self.et_time_label)
+        header_layout.addWidget(self.price_label)
+        header_layout.addWidget(self.settings_btn)
+        header_layout.addWidget(self.reset_paper_btn)
+        root.addWidget(header_card)
 
-        center = QHBoxLayout()
-        left = QVBoxLayout()
+        body = QGridLayout()
+        body.setHorizontalSpacing(16)
+
+        left_card = self._card()
+        left_layout = QVBoxLayout(left_card)
+        left_layout.setContentsMargins(16, 16, 16, 16)
+        left_layout.setSpacing(12)
 
         ind_row = QHBoxLayout()
+        ind_row.setSpacing(8)
         self.chk_sma50 = QCheckBox("SMA50")
         self.chk_sma200 = QCheckBox("SMA200")
         self.chk_rsi = QCheckBox("RSI(14)")
@@ -161,29 +176,54 @@ class TradingScreen(QWidget):
             c.toggled.connect(self._refresh_chart)
             ind_row.addWidget(c)
         ind_row.addStretch()
-        left.addLayout(ind_row)
+        left_layout.addLayout(ind_row)
 
         self.chart = ChartWidget()
-        left.addWidget(self.chart)
-        center.addLayout(left, 3)
+        left_layout.addWidget(self.chart)
 
-        right = QVBoxLayout()
-        mkt = QGroupBox("Market Data")
-        mkt_l = QVBoxLayout(mkt)
+        body.addWidget(left_card, 0, 0)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(16)
+
+        tape_card = self._card()
+        tape_layout = QVBoxLayout(tape_card)
+        tape_layout.setContentsMargins(16, 16, 16, 16)
+        tape_layout.setSpacing(8)
         self.tape_widget = TapeWidget()
         self.day_summary = QLabel("High: -  Low: -  Volume: -")
-        mkt_l.addWidget(self.tape_widget)
-        mkt_l.addWidget(self.day_summary)
-        right.addWidget(mkt, 3)
+        self.day_summary.setObjectName("secondaryLabel")
+        tape_layout.addWidget(self.tape_widget)
+        tape_layout.addWidget(self.day_summary)
+        right_col.addWidget(tape_card, 7)
 
+        order_card = self._card()
+        order_layout = QVBoxLayout(order_card)
+        order_layout.setContentsMargins(16, 16, 16, 16)
+        order_layout.setSpacing(8)
         self.order_panel = OrderPanel()
         self.order_panel.order_requested.connect(self._on_manual_order)
         self.order_panel.cancel_all_requested.connect(self._cancel_all_orders)
-        right.addWidget(self.order_panel, 2)
+        order_layout.addWidget(self.order_panel)
+        right_col.addWidget(order_card, 3)
 
-        cond_box = QGroupBox("조건주문")
-        cond_layout = QVBoxLayout(cond_box)
+        right_wrap = QWidget()
+        right_wrap.setLayout(right_col)
+        body.addWidget(right_wrap, 0, 1)
+        body.setColumnStretch(0, 7)
+        body.setColumnStretch(1, 3)
+
+        root.addLayout(body, 7)
+
+        cond_card = self._card()
+        cond_layout = QVBoxLayout(cond_card)
+        cond_layout.setContentsMargins(16, 16, 16, 16)
+        cond_layout.setSpacing(12)
+        cond_layout.addWidget(QLabel("조건주문"))
+
         form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
         self.cond_op = QComboBox(); self.cond_op.addItems([">=", "<="])
         self.cond_action = QComboBox(); self.cond_action.addItems(["BUY", "SELL"])
         self.cond_type = QComboBox(); self.cond_type.addItems(["MARKET", "LIMIT"])
@@ -199,6 +239,7 @@ class TradingScreen(QWidget):
         cond_layout.addLayout(form)
 
         row = QHBoxLayout()
+        row.setSpacing(8)
         self.btn_add_cond = QPushButton("Create Condition")
         self.btn_cancel_cond = QPushButton("Cancel Selected")
         self.btn_add_cond.clicked.connect(self._create_condition)
@@ -215,14 +256,15 @@ class TradingScreen(QWidget):
         cond_layout.addWidget(self.cond_active)
         cond_layout.addWidget(QLabel("Triggered/History"))
         cond_layout.addWidget(self.cond_hist)
-        right.addWidget(cond_box, 3)
-
-        center.addLayout(right, 2)
-        root.addLayout(center, 5)
+        root.addWidget(cond_card, 3)
 
         bottom = QGridLayout()
+        bottom.setHorizontalSpacing(16)
+        bottom.setVerticalSpacing(16)
         self.account_card = QLabel("Equity: -\nCash: -\nDay PnL: -")
+        self.account_card.setObjectName("secondaryLabel")
         self.position_card = QLabel("Qty: -\nAvg: -\nCurrent: -\nUPnL: -\nPnL%: -")
+        self.position_card.setObjectName("secondaryLabel")
         bottom.addWidget(self._boxed("Account", self.account_card), 0, 0)
         bottom.addWidget(self._boxed("Position", self.position_card), 0, 1)
 
@@ -234,11 +276,31 @@ class TradingScreen(QWidget):
         bottom.addWidget(self._boxed("Fills", self.fills_table), 1, 1)
         root.addLayout(bottom, 2)
 
-    def _boxed(self, title: str, widget: QWidget) -> QGroupBox:
-        box = QGroupBox(title)
+        self._load_local_theme()
+
+    def _card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("card")
+        card.setFrameShape(QFrame.StyledPanel)
+        return card
+
+    def _boxed(self, title: str, widget: QWidget) -> QFrame:
+        box = self._card()
         l = QVBoxLayout(box)
+        l.setContentsMargins(12, 12, 12, 12)
+        l.setSpacing(8)
+        title_lbl = QLabel(title)
+        title_lbl.setObjectName("cardTitle")
+        l.addWidget(title_lbl)
         l.addWidget(widget)
         return box
+
+    def _load_local_theme(self) -> None:
+        from pathlib import Path
+
+        qss_path = Path(__file__).resolve().parent.parent / "styles" / "theme.qss"
+        if qss_path.exists():
+            self.setStyleSheet(qss_path.read_text(encoding="utf-8"))
 
     def _init_db(self) -> None:
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -270,6 +332,12 @@ class TradingScreen(QWidget):
             q: Quote = payload  # type: ignore[assignment]
             sign = "+" if q.change_pct >= 0 else ""
             self.price_label.setText(f"{q.symbol} {q.price:.2f} ({sign}{q.change_pct:.2f}%)")
+            if q.change_pct > 0:
+                self.price_label.setStyleSheet("color:#D43B3B;")
+            elif q.change_pct < 0:
+                self.price_label.setStyleSheet("color:#2F6BDE;")
+            else:
+                self.price_label.setStyleSheet("color:#7A808B;")
             self.day_summary.setText(f"High: {q.high:.2f}  Low: {q.low:.2f}  Volume: {q.volume:,}")
             self.paper_broker.update_quote(q)
             self.tape_widget.add_quote_tick(q.price, q.volume)

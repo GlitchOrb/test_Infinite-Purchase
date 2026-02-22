@@ -162,6 +162,7 @@ pytest -v
 - Live mode uses `KiwoomRestBroker`.
 
 
+
 ## Windows EXE 빌드 (PyInstaller)
 
 데스크탑 앱(`app.py`)을 단일 배포 가능한 EXE 형태로 빌드할 수 있습니다.
@@ -184,8 +185,6 @@ dist\AlphaPredator\AlphaPredator.exe
 py -m pip install pyinstaller pyqt5 pandas numpy
 py build_exe.py
 ```
-
-
 
 ## License
 
