@@ -1,10 +1,10 @@
-# Infinite Purchase
+# Infinite Purchase — Kiwoom REST Trading UI
 
 PyQt desktop trading application for semiconductor regime trading, centered on `app.py`.
 
 Trades SOXL/SOXS using SOXX regime signals. No ML/LLM decisioning in the execution path.
 
----
+Legacy files from older architecture may remain in repository history, but product behavior is UI-first via `app.py` only.
 
 ## What This Does
 
@@ -41,32 +41,6 @@ The production runtime is **app-first**:
 - **Conditions:** `ConditionEngine` stores and executes condition orders with emergency-stop awareness.
 - **Persistence:** SQLite initialized at startup (`init_db` + `run_migrations`).
 
-### Architecture Diagram
-
-```mermaid
-flowchart LR
-  U[PyQt App\napp.py] --> TS[TradingScreen]
-  U --> LG[LoginPage\nApp Key/Secret/Account\nTelegram Settings]
-
-  TS --> AC[Auto Controller\nAutoTradingController]
-  TS --> CE[Condition Engine]
-  AC --> SE[StrategyEngine]
-  AC --> TM[TradeManager]
-
-  TM --> PB[PaperBroker]
-  TM --> KB[Kiwoom REST Broker]
-  CE --> PB
-  CE --> KB
-
-  PB --> DB[(SQLite\npaper_orders\npaper_fills\nlive_orders\nindicator_settings\nui_settings\ncondition_orders\ntelegram_settings_meta)]
-  KB --> DB
-  TS --> DB
-  AC --> DB
-  CE --> DB
-
-  U --> TG[Telegram Manager]
-  TG --> U
-```
 
 ## Key Modules
 
@@ -213,9 +187,3 @@ dist\AlphaPredator\AlphaPredator.exe
 py -m pip install pyinstaller pyqt5 pandas numpy
 py build_exe.py
 ```
-
-### 3) 실행 시 주의사항
-
-- 라이브 실행 전 Kiwoom REST 인증 정보(App Key/Secret/Account)를 로그인 화면에서 입력해야 합니다.
-- Telegram 알림 사용 시 토큰/채팅 ID를 로그인 화면에서 설정하세요.
-- 아이콘 리소스(`icon.ico`, `icon.png`)는 빌드 스크립트가 자동 포함합니다.
