@@ -639,11 +639,11 @@ class Runtime:
     def handle_resume(self, passcode: str) -> tuple[bool, str]:
         """Public resume entry point with passcode verification."""
         if passcode != self.cfg.kill_resume_passcode:
-            return False, "Resume denied — incorrect passcode."
+            return False, "❌ 재개 실패 — 비밀번호가 올바르지 않습니다."
         self._handle_resume()
         if is_emergency_stop(self.conn):
-            return False, "Resume denied — reconcile mismatch."
-        return True, "Resume accepted"
+            return False, "❌ 재개 실패 — 포지션 불일치가 존재합니다."
+        return True, "✅ 시스템이 정상적으로 재개되었습니다."
 
     def _cancel_all_open_orders(self) -> None:
         open_orders = get_open_orders(self.conn)
