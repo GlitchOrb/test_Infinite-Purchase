@@ -14,6 +14,8 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
+    QTabBar,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -37,6 +39,7 @@ from indicators.sma import SMAIndicator
 from widgets.chart_widget import ChartWidget, FillMarker
 from widgets.order_panel import OrderPanel
 from widgets.tape_widget import TapeWidget
+from widgets.toast import Toast
 
 
 class _WorkerSignals(QObject):
@@ -159,12 +162,17 @@ class TradingScreen(QWidget):
         header_layout.addWidget(self.reset_paper_btn)
         root.addWidget(header_card)
 
-        main_split = QSplitter(Qt.Horizontal)
+        content_row = QHBoxLayout()
+        content_row.setSpacing(16)
 
-        left_card = self._card()
-        left_layout = QVBoxLayout(left_card)
-        left_layout.setContentsMargins(16, 16, 16, 16)
-        left_layout.setSpacing(12)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(16)
+
+        chart_card = self._card()
+        chart_layout = QVBoxLayout(chart_card)
+        chart_layout.setContentsMargins(16, 16, 16, 16)
+        chart_layout.setSpacing(12)
+        chart_layout.addWidget(self._section_label("Chart"))
 
         ind_row = QHBoxLayout()
         ind_row.setSpacing(8)
@@ -177,46 +185,89 @@ class TradingScreen(QWidget):
             c.toggled.connect(self._refresh_chart)
             ind_row.addWidget(c)
         ind_row.addStretch()
-        left_layout.addLayout(ind_row)
+        chart_layout.addLayout(ind_row)
 
         self.chart = ChartWidget()
-        left_layout.addWidget(self.chart)
-        main_split.addWidget(left_card)
+        chart_layout.addWidget(self.chart)
+        left_col.addWidget(chart_card, 7)
 
-        right_split = QSplitter(Qt.Vertical)
+        bottom = QGridLayout()
+        bottom.setHorizontalSpacing(16)
+        bottom.setVerticalSpacing(16)
+        self.account_card = QLabel("Equity: -\nCash: -\nDay PnL: -")
+        self.account_card.setObjectName("secondaryLabel")
+        self.position_card = QLabel("Qty: -\nAvg: -\nCurrent: -\nUPnL: -\nPnL%: -")
+        self.position_card.setObjectName("secondaryLabel")
+        bottom.addWidget(self._boxed("Account", self.account_card), 0, 0)
+        bottom.addWidget(self._boxed("Position", self.position_card), 0, 1)
 
-        tape_card = self._card()
-        tape_layout = QVBoxLayout(tape_card)
+        self.open_orders = QTableWidget(0, 5)
+        self.open_orders.setHorizontalHeaderLabels(["ID", "Symbol", "Side", "Qty", "Status"])
+        self.fills_table = QTableWidget(0, 6)
+        self.fills_table.setHorizontalHeaderLabels(["Time", "Type", "Symbol", "Side", "Qty", "Price"])
+        bottom.addWidget(self._boxed("Open Orders", self.open_orders), 1, 0)
+        bottom.addWidget(self._boxed("Fills", self.fills_table), 1, 1)
+        left_col.addLayout(bottom, 3)
+
+        content_row.addLayout(left_col, 7)
+
+        self.right_col = QWidget()
+        self.right_col_layout = QVBoxLayout(self.right_col)
+        self.right_col_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_col_layout.setSpacing(16)
+
+        self.tape_card = self._card()
+        tape_layout = QVBoxLayout(self.tape_card)
         tape_layout.setContentsMargins(16, 16, 16, 16)
         tape_layout.setSpacing(8)
+        tape_layout.addWidget(self._section_label("Tape"))
         self.tape_widget = TapeWidget()
         self.day_summary = QLabel("High: -  Low: -  Volume: -")
         self.day_summary.setObjectName("secondaryLabel")
         tape_layout.addWidget(self.tape_widget)
         tape_layout.addWidget(self.day_summary)
 
-        order_card = self._card()
-        order_layout = QVBoxLayout(order_card)
+        self.order_card = self._card()
+        order_layout = QVBoxLayout(self.order_card)
         order_layout.setContentsMargins(16, 16, 16, 16)
         order_layout.setSpacing(8)
+        order_layout.addWidget(self._section_label("Order"))
         self.order_panel = OrderPanel()
         self.order_panel.order_requested.connect(self._on_manual_order)
         self.order_panel.cancel_all_requested.connect(self._cancel_all_orders)
         order_layout.addWidget(self.order_panel)
 
-        tape_scroll = QScrollArea(); tape_scroll.setWidgetResizable(True); tape_scroll.setFrameShape(QFrame.NoFrame); tape_scroll.setWidget(tape_card)
-        order_scroll = QScrollArea(); order_scroll.setWidgetResizable(True); order_scroll.setFrameShape(QFrame.NoFrame); order_scroll.setWidget(order_card)
+        self.position_summary_compact = QLabel("Qty: -\nAvg: -\nCurrent: -\nUPnL: -\nPnL%: -")
+        self.position_summary_compact.setObjectName("secondaryLabel")
+        self.position_summary_card = self._boxed("Position", self.position_summary_compact)
 
-        right_split.addWidget(tape_scroll)
-        right_split.addWidget(order_scroll)
-        right_split.setStretchFactor(0, 55)
-        right_split.setStretchFactor(1, 45)
+        self.right_col_layout.addWidget(self.tape_card, 5)
+        self.right_col_layout.addWidget(self.order_card, 4)
+        self.right_col_layout.addWidget(self.position_summary_card, 3)
 
-        main_split.addWidget(right_split)
-        main_split.setStretchFactor(0, 70)
-        main_split.setStretchFactor(1, 30)
+        self.compact_tabs = QTabBar()
+        self.compact_tabs.setObjectName("compactPanelTabs")
+        self.compact_tabs.addTab("Tape")
+        self.compact_tabs.addTab("Order")
+        self.compact_tabs.addTab("Position")
+        self.compact_tabs.currentChanged.connect(self._sync_compact_stack)
+        self.compact_tabs.hide()
 
-        root.addWidget(main_split, 7)
+        self.compact_stack = QStackedWidget()
+        self.compact_pages = [QWidget(), QWidget(), QWidget()]
+        self.compact_page_layouts = []
+        for page in self.compact_pages:
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            page_layout.setSpacing(0)
+            self.compact_page_layouts.append(page_layout)
+            self.compact_stack.addWidget(page)
+        self.compact_stack.hide()
+
+        content_row.addWidget(self.right_col, 3)
+        root.addLayout(content_row, 7)
+        root.addWidget(self.compact_tabs)
+        root.addWidget(self.compact_stack, 4)
 
         cond_card = self._card()
         cond_layout = QVBoxLayout(cond_card)
@@ -261,23 +312,8 @@ class TradingScreen(QWidget):
         cond_layout.addWidget(self.cond_hist)
         root.addWidget(cond_card, 3)
 
-        bottom = QGridLayout()
-        bottom.setHorizontalSpacing(16)
-        bottom.setVerticalSpacing(16)
-        self.account_card = QLabel("Equity: -\nCash: -\nDay PnL: -")
-        self.account_card.setObjectName("secondaryLabel")
-        self.position_card = QLabel("Qty: -\nAvg: -\nCurrent: -\nUPnL: -\nPnL%: -")
-        self.position_card.setObjectName("secondaryLabel")
-        bottom.addWidget(self._boxed("Account", self.account_card), 0, 0)
-        bottom.addWidget(self._boxed("Position", self.position_card), 0, 1)
-
-        self.open_orders = QTableWidget(0, 5)
-        self.open_orders.setHorizontalHeaderLabels(["ID", "Symbol", "Side", "Qty", "Status"])
-        self.fills_table = QTableWidget(0, 6)
-        self.fills_table.setHorizontalHeaderLabels(["Time", "Type", "Symbol", "Side", "Qty", "Price"])
-        bottom.addWidget(self._boxed("Open Orders", self.open_orders), 1, 0)
-        bottom.addWidget(self._boxed("Fills", self.fills_table), 1, 1)
-        root.addLayout(bottom, 2)
+        self.toast = Toast(self)
+        self._apply_responsive_mode(self.width())
 
         self._load_local_theme()
 
@@ -297,6 +333,50 @@ class TradingScreen(QWidget):
         l.addWidget(title_lbl)
         l.addWidget(widget)
         return box
+
+    def _section_label(self, title: str) -> QLabel:
+        label = QLabel(title)
+        label.setObjectName("sectionCaption")
+        return label
+
+    def _sync_compact_stack(self, index: int) -> None:
+        self.compact_stack.setCurrentIndex(index)
+
+    def _apply_responsive_mode(self, width: int) -> None:
+        compact = width < 1100
+        if getattr(self, "_compact_mode", None) == compact:
+            return
+        self._compact_mode = compact
+
+        if compact:
+            self._move_card(self.tape_card, self.compact_page_layouts[0])
+            self._move_card(self.order_card, self.compact_page_layouts[1])
+            self._move_card(self.position_summary_card, self.compact_page_layouts[2])
+            self.compact_tabs.setCurrentIndex(0)
+            self.compact_stack.setCurrentIndex(0)
+        else:
+            self._move_card(self.tape_card, self.right_col_layout, 5)
+            self._move_card(self.order_card, self.right_col_layout, 4)
+            self._move_card(self.position_summary_card, self.right_col_layout, 3)
+
+        self.right_col.setVisible(not compact)
+        self.compact_tabs.setVisible(compact)
+        self.compact_stack.setVisible(compact)
+
+    def _move_card(self, widget: QWidget, layout: QVBoxLayout, stretch: int = 0) -> None:
+        if widget.parentWidget() is layout.parentWidget():
+            return
+        widget.setParent(layout.parentWidget())
+        if stretch:
+            layout.addWidget(widget, stretch)
+        else:
+            layout.addWidget(widget)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        self._apply_responsive_mode(event.size().width())
+        if hasattr(self, "toast"):
+            self.toast.move((self.width() - self.toast.width()) // 2, self.height() - self.toast.height() - 24)
+        super().resizeEvent(event)
 
     def _load_local_theme(self) -> None:
         from pathlib import Path
@@ -354,11 +434,13 @@ class TradingScreen(QWidget):
         elif key == "manual_order":
             result = payload  # type: ignore[assignment]
             self.order_panel.set_status(f"ORDER_RESULT {result.get('status')} {result.get('order_id')}")
+            self.toast.show_message("Order submitted", "success")
         self._load_tables()
         self._refresh_condition_tables()
 
     def _on_worker_error(self, key: str, msg: str) -> None:
         self.order_panel.set_status(f"{key} error: {msg}")
+        self.toast.show_message(f"{key}: {msg}", "error")
         if key == "manual_order":
             return
         if self.mode == self.MODE_LIVE:
@@ -564,15 +646,18 @@ class TradingScreen(QWidget):
         if account is None:
             self.account_card.setText("Equity: -\nCash: -\nDay PnL: -")
             self.position_card.setText("Qty: -\nAvg: -\nCurrent: -\nUPnL: -\nPnL%: -")
+            self.position_summary_compact.setText(self.position_card.text())
             return
         self.account_card.setText(f"Total Equity: {account.equity:,.2f}\nCash: {account.cash:,.2f}\nBuying Power: {account.buying_power:,.2f}")
         pos = next((p for p in positions if p.symbol == self.symbol), None)
         if not pos:
             self.position_card.setText("Qty: 0\nAvg: -\nCurrent: -\nUPnL: 0\nPnL%: 0")
+            self.position_summary_compact.setText(self.position_card.text())
             return
         upnl = (pos.market_price - pos.avg_price) * pos.qty
         pct = (upnl / max(1e-9, pos.avg_price * max(1, pos.qty))) * 100
         self.position_card.setText(f"Qty: {pos.qty}\nAvg: {pos.avg_price:.2f}\nCurrent: {pos.market_price:.2f}\nUPnL: {upnl:.2f}\nPnL%: {pct:.2f}%")
+        self.position_summary_compact.setText(self.position_card.text())
 
     def _load_tables(self) -> None:
         if self.mode == self.MODE_PAPER:

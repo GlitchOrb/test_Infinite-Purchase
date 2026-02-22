@@ -36,9 +36,10 @@ class TapeWidget(QWidget):
         self.table.setHorizontalHeaderLabels(["Time", "Price", "Size"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setShowGrid(False)
-        self.table.setAlternatingRowColors(False)
+        self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -84,14 +85,11 @@ class TapeWidget(QWidget):
                 ref = self._last_price
             if ref is not None:
                 if px > ref:
-                    color = "#D43B3B"  # up = red
+                    p_item.setData(Qt.ForegroundRole, "#D43B3B")
                 elif px < ref:
-                    color = "#2F6BDE"  # down = blue
+                    p_item.setData(Qt.ForegroundRole, "#2F6BDE")
                 else:
-                    color = "#7A808B"  # neutral = gray
-                p_item.setForeground(Qt.GlobalColor.black)
-                s_item.setForeground(Qt.GlobalColor.black)
-                p_item.setData(Qt.ForegroundRole, color)
+                    p_item.setData(Qt.ForegroundRole, "#7A808B")
 
             self.table.setItem(i, 0, t_item)
             self.table.setItem(i, 1, p_item)

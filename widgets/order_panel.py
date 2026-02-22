@@ -31,6 +31,10 @@ class OrderPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(12)
 
+        title = QLabel("Smart Order")
+        title.setObjectName("cardTitle")
+        root.addWidget(title)
+
         tabs = QTabWidget()
         tabs.setObjectName("orderTabs")
         root.addWidget(tabs)
@@ -48,24 +52,14 @@ class OrderPanel(QWidget):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(8)
 
-        self.side_box = QComboBox()
-        self.side_box.addItems(["BUY", "SELL"])
-
-        self.order_type_box = QComboBox()
-        self.order_type_box.addItems(["MARKET", "LIMIT"])
+        self.side_box = QComboBox(); self.side_box.addItems(["BUY", "SELL"])
+        self.order_type_box = QComboBox(); self.order_type_box.addItems(["MARKET", "LIMIT"])
         self.order_type_box.currentTextChanged.connect(self._on_order_type_changed)
+        self.qty_mode_box = QComboBox(); self.qty_mode_box.addItems(["Shares", "$", "%"])
 
-        self.qty_mode_box = QComboBox()
-        self.qty_mode_box.addItems(["Shares", "$", "%"])
-
-        self.qty_spin = QSpinBox()
-        self.qty_spin.setRange(1, 10_000_000)
-        self.qty_spin.setValue(1)
-
-        self.limit_price_spin = QDoubleSpinBox()
-        self.limit_price_spin.setDecimals(4)
-        self.limit_price_spin.setRange(0.0, 1_000_000.0)
-        self.limit_price_spin.setEnabled(False)
+        self.qty_spin = QSpinBox(); self.qty_spin.setRange(1, 10_000_000); self.qty_spin.setValue(1)
+        self.limit_price_spin = QDoubleSpinBox(); self.limit_price_spin.setDecimals(4)
+        self.limit_price_spin.setRange(0.0, 1_000_000.0); self.limit_price_spin.setEnabled(False)
 
         form.addRow("Side", self.side_box)
         form.addRow("Order Type", self.order_type_box)
@@ -74,8 +68,7 @@ class OrderPanel(QWidget):
         form.addRow("Limit Price", self.limit_price_spin)
         layout.addLayout(form)
 
-        presets_layout = QGridLayout()
-        presets_layout.setHorizontalSpacing(8)
+        presets_layout = QGridLayout(); presets_layout.setHorizontalSpacing(8)
         for i, val in enumerate([1, 10, 100, 0]):
             txt = "Max" if val == 0 else str(val)
             btn = QPushButton(txt)
@@ -84,24 +77,16 @@ class OrderPanel(QWidget):
             presets_layout.addWidget(btn, 0, i)
         layout.addLayout(presets_layout)
 
-        btn_row_1 = QHBoxLayout()
-        btn_row_1.setSpacing(8)
-        self.btn_curr_buy = QPushButton("현재가 매수")
-        self.btn_curr_sell = QPushButton("현재가 매도")
-        self.btn_curr_buy.setObjectName("buyButton")
-        self.btn_curr_sell.setObjectName("sellButton")
-        btn_row_1.addWidget(self.btn_curr_buy)
-        btn_row_1.addWidget(self.btn_curr_sell)
+        btn_row_1 = QHBoxLayout(); btn_row_1.setSpacing(8)
+        self.btn_curr_buy = QPushButton("현재가 매수"); self.btn_curr_buy.setObjectName("buyButton")
+        self.btn_curr_sell = QPushButton("현재가 매도"); self.btn_curr_sell.setObjectName("sellButton")
+        btn_row_1.addWidget(self.btn_curr_buy); btn_row_1.addWidget(self.btn_curr_sell)
         layout.addLayout(btn_row_1)
 
-        btn_row_2 = QHBoxLayout()
-        btn_row_2.setSpacing(8)
-        self.btn_mkt_buy = QPushButton("시장가 매수")
-        self.btn_mkt_sell = QPushButton("시장가 매도")
-        self.btn_mkt_buy.setObjectName("buyButton")
-        self.btn_mkt_sell.setObjectName("sellButton")
-        btn_row_2.addWidget(self.btn_mkt_buy)
-        btn_row_2.addWidget(self.btn_mkt_sell)
+        btn_row_2 = QHBoxLayout(); btn_row_2.setSpacing(8)
+        self.btn_mkt_buy = QPushButton("시장가 매수"); self.btn_mkt_buy.setObjectName("buyButton")
+        self.btn_mkt_sell = QPushButton("시장가 매도"); self.btn_mkt_sell.setObjectName("sellButton")
+        btn_row_2.addWidget(self.btn_mkt_buy); btn_row_2.addWidget(self.btn_mkt_sell)
         layout.addLayout(btn_row_2)
 
         self.btn_cancel_all = QPushButton("전체취소")
@@ -148,10 +133,7 @@ class OrderPanel(QWidget):
         self.limit_price_spin.setEnabled(text == "LIMIT")
 
     def _set_preset(self, val: int) -> None:
-        if val == 0:
-            self.qty_spin.setValue(self.qty_spin.maximum())
-        else:
-            self.qty_spin.setValue(val)
+        self.qty_spin.setValue(self.qty_spin.maximum() if val == 0 else val)
 
     def _emit_order(self, side: str, action_type: str) -> None:
         payload: Dict[str, object] = {
