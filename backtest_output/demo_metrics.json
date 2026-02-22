@@ -1,0 +1,20 @@
+{
+  "total_return_pct": -40.9064,
+  "cagr_pct": -12.3231,
+  "sharpe_ratio": -0.4385,
+  "sortino_ratio": -0.3792,
+  "max_drawdown_pct": -51.3286,
+  "max_drawdown_duration_days": 878,
+  "calmar_ratio": -0.2401,
+  "total_trades": 28,
+  "win_rate_pct": 46.43,
+  "avg_trade_pnl": -907.87,
+  "avg_win": 955.42,
+  "avg_loss": -2522.73,
+  "profit_factor": 0.3282,
+  "bull_days": 214,
+  "bear_days": 228,
+  "neutral_days": 566,
+  "transition_days": 0,
+  "params": {}
+}
