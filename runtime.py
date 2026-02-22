@@ -486,11 +486,20 @@ class Runtime:
             # Fill confirmed
             insert_fill(self.conn, data.order_id, data.qty, data.price)
 
-            # Update position
-            pos = get_position(self.conn, data.symbol) or {
+            side = OrderSide.BUY if "매수" in data.side else OrderSide.SELL
+
+            # ----------------------------------------------------------
+            # CRITICAL: capture pre-fill position BEFORE apply_fill
+            # mutates it.  apply_fill resets avg_cost to 0 on full
+            # liquidation, which would corrupt the realized-PnL calc.
+            # ----------------------------------------------------------
+            pre_pos = get_position(self.conn, data.symbol) or {
                 "qty": 0, "avg_cost": 0.0,
             }
-            side = OrderSide.BUY if "매수" in data.side else OrderSide.SELL
+            pre_avg_cost: float = pre_pos.get("avg_cost", 0.0)
+            pre_qty: int = pre_pos.get("qty", 0)
+
+            # Apply fill → updates position (qty, avg_cost, resets on 0)
             tm_state = _load_tm_state(self.conn)
             tm_state = self.trade_mgr.apply_fill(
                 data.symbol, side, data.qty, data.price,
@@ -508,12 +517,28 @@ class Runtime:
             log.info("Fill processed: %s %s %d @ %.2f",
                      data.symbol, side.value, data.qty, data.price)
 
-            # Vampire rebalance check for SOXS take-profit
+            # ----------------------------------------------------------
+            # Vampire rebalance: SOXS sell → inject profit into SOXL
+            # Uses pre-fill avg_cost/qty so the calculation is correct
+            # even after apply_fill has already reset the position.
+            # ----------------------------------------------------------
             if data.symbol == "SOXS" and side == OrderSide.SELL:
-                pos_soxs = get_position(self.conn, "SOXS")
-                if pos_soxs and pos_soxs["qty"] == 0:
-                    # Full exit — compute realized PnL
-                    realized = (data.price - (pos_soxs.get("avg_cost", 0.0))) * data.qty
+                # Determine if this fill fully liquidated the position
+                post_qty = pre_qty - data.qty
+                is_full_exit = post_qty <= 0
+
+                # Realized PnL from pre-fill snapshot
+                realized = (data.price - pre_avg_cost) * data.qty
+
+                log.info(
+                    "SOXS SELL pnl calc: pre_avg=%.4f pre_qty=%d "
+                    "fill_qty=%d fill_px=%.4f post_qty=%d "
+                    "realized=%.2f full_exit=%s",
+                    pre_avg_cost, pre_qty, data.qty, data.price,
+                    post_qty, realized, is_full_exit,
+                )
+
+                if realized > 0:
                     from db import get_latest_regime
                     regime = get_latest_regime(self.conn)
                     if regime and regime.get("effective_state") == "BEAR_ACTIVE":
@@ -524,6 +549,11 @@ class Runtime:
                             EffectiveState.BEAR_ACTIVE, soxl_px, tm_state,
                         )
                         _persist_tm_state(self.conn, tm_state)
+                        log.info(
+                            "Vampire inject: realized=%.2f "
+                            "injection_budget=%.2f",
+                            realized, tm_state.injection_budget,
+                        )
 
     # ------------------------------------------------------------------ #
     #  Kill / Resume handlers
