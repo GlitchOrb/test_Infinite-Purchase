@@ -161,9 +161,6 @@ pytest -v
 - Paper mode uses `PaperBroker` simulation.
 - Live mode uses `KiwoomRestBroker`.
 
-## License
-
-MIT — not financial or legal advice.
 
 ## Windows EXE 빌드 (PyInstaller)
 
@@ -187,3 +184,9 @@ dist\AlphaPredator\AlphaPredator.exe
 py -m pip install pyinstaller pyqt5 pandas numpy
 py build_exe.py
 ```
+
+
+
+## License
+
+MIT — not financial or legal advice.
