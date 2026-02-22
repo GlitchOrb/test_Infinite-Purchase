@@ -222,3 +222,33 @@ sequenceDiagram
 - Treat balance fetch failure as a critical fault: stop buys and raise alert.
 - Avoid logging secrets (Telegram passcodes, raw sensitive payloads).
 - Keep SOXS exits single-intent per cycle to prevent duplicate sells.
+
+
+## Windows EXE 빌드 (PyInstaller)
+
+데스크탑 앱(`app.py`)을 단일 배포 가능한 EXE 형태로 빌드할 수 있습니다.
+
+### 1) 빠른 빌드 (Windows)
+
+```bat
+build_exe.bat
+```
+
+성공 시 산출물:
+
+```text
+dist\AlphaPredator\AlphaPredator.exe
+```
+
+### 2) 수동 빌드
+
+```bat
+py -m pip install pyinstaller pyqt5 pandas numpy
+py build_exe.py
+```
+
+### 3) 실행 시 주의사항
+
+- Kiwoom OpenAPI+ 환경(Windows, OCX 설치)이 준비되어 있어야 실거래 연결이 가능합니다.
+- Telegram/DB 경로 등 환경변수는 EXE 실행 전 시스템 환경변수로 설정하세요.
+- 아이콘 리소스(`icon.ico`, `icon.png`)는 빌드 스크립트가 자동 포함합니다.
