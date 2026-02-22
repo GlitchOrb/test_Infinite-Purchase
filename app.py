@@ -60,6 +60,25 @@ from ui_theme import (
 
 log = logging.getLogger(__name__)
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
+
+def _time_header_text() -> str:
+    """Return KR/US realtime clock text with DST-aware New York timezone."""
+    kr_now = datetime.now()
+    us_now = datetime.now(ZoneInfo("America/New_York"))
+    return (
+        f"🇰🇷 현지시간: {kr_now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"🇺🇸 미국시간: {us_now.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+    )
+
+
+def _us_time_tag() -> str:
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S %Z")
+
 
 # ======================================================================= #
 #  State helpers (same as runtime.py, shared)
@@ -253,7 +272,8 @@ class DashboardPage(QWidget):
         root.setSpacing(12)
 
         # ===== HEADER ===== #
-        header = QHBoxLayout()
+        self._header_layout = QHBoxLayout()
+        header = self._header_layout
         header.setSpacing(14)
 
         title = QLabel("Alpha Predator")
@@ -277,6 +297,12 @@ class DashboardPage(QWidget):
         header.addWidget(self._score_badge)
 
         header.addStretch()
+
+        self._time_label = QLabel(_time_header_text())
+        self._time_label.setFont(F.small())
+        self._time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._time_label.setStyleSheet(f"color: {C.TEXT_SUB};")
+        header.addWidget(self._time_label)
 
         # Refresh button
         self._refresh_btn = make_secondary_button("↻ Refresh")
@@ -360,25 +386,21 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------ #
 
     def update_regime(self, state: str, score: int) -> None:
-        # Replace badge
-        layout = self._regime_badge.parent()
-        if layout is None:
+        """Replace regime badge in-place and update score badge text."""
+        if not self._header_layout or not self._regime_badge:
             return
+
         old = self._regime_badge
+        idx = self._header_layout.indexOf(old)
+        if idx < 0:
+            return
+
         new = regime_badge(state)
-        # Find and replace in parent layout
-        for i in range(self.layout().count()):
-            item = self.layout().itemAt(i)
-            if item and item.layout():
-                for j in range(item.layout().count()):
-                    w = item.layout().itemAt(j)
-                    if w and w.widget() == old:
-                        item.layout().removeWidget(old)
-                        old.deleteLater()
-                        item.layout().insertWidget(j, new)
-                        self._regime_badge = new
-                        break
-        # Update score
+        self._header_layout.removeWidget(old)
+        old.deleteLater()
+        self._header_layout.insertWidget(idx, new)
+        self._regime_badge = new
+
         self._score_badge.setText(f"{score} / 3")
 
     # ------------------------------------------------------------------ #
@@ -396,6 +418,10 @@ class DashboardPage(QWidget):
         except Exception as e:
             self.activity.append(f"Refresh error: {e}")
             log.exception("Dashboard refresh failed")
+
+    def update_time_labels(self) -> None:
+        """Update top header KR/US clocks."""
+        self._time_label.setText(_time_header_text())
 
     def _refresh_positions(self) -> None:
         tm = _load_tm_state(self.conn)
@@ -483,7 +509,7 @@ class DashboardPage(QWidget):
             TradeMarker(x=80, price=price[80], symbol="SOXL", side="BUY",
                         reason="Avg down -8%"),
             TradeMarker(x=120, price=price[120], symbol="SOXL", side="SELL",
-                        reason="Trailing -15%"),
+                        reason="📉 트레일링 스탑 조건 충족 — 부분 청산 실행"),
             TradeMarker(x=150, price=price[150], symbol="SOXS", side="BUY",
                         reason="Bear regime entry"),
             TradeMarker(x=170, price=price[170], symbol="SOXS", side="SELL",
@@ -594,6 +620,7 @@ class MainWindow(QMainWindow):
         """Switch to dashboard and start periodic refresh."""
         self._stack.setCurrentIndex(1)
         self._dashboard.refresh_all()
+        self._dashboard.update_time_labels()
         self._refresh_timer.start(5000)  # 5-second refresh cycle
         self._dashboard.activity.append("System online")
 
@@ -684,8 +711,9 @@ class MainWindow(QMainWindow):
             # Log to UI
             side_str = "BUY" if side == OrderSide.BUY else "SELL"
             self._dashboard.activity.append(
-                f"Fill: {data.symbol} {side_str} {data.qty} @ ${data.price:.2f}"
+                f"Fill: {data.symbol} {side_str} {data.qty} @ ${data.price:.2f} (US { _us_time_tag() })"
             )
+            log.info("체결 이벤트 [%s]: %s %s %d @ %.2f", _us_time_tag(), data.symbol, side_str, data.qty, data.price)
 
             # Vampire rebalance for SOXS sells
             if data.symbol == "SOXS" and side == OrderSide.SELL:
@@ -702,7 +730,7 @@ class MainWindow(QMainWindow):
                                    str(tm_state.injection_budget))
                         self.conn.commit()
                         self._dashboard.activity.append(
-                            f"Vampire inject: +${realized:.2f}"
+                            f"🩸 수익 재투입 실행 — SOXL 평단가 하향 조정 (+${realized:.2f}) (US { _us_time_tag() })"
                         )
 
             # Refresh UI
@@ -715,6 +743,7 @@ class MainWindow(QMainWindow):
     def _periodic_refresh(self) -> None:
         """Light refresh every 5s — updates position + engine panels."""
         try:
+            self._dashboard.update_time_labels()
             self._dashboard._refresh_positions()
             self._dashboard._refresh_engine()
         except Exception:

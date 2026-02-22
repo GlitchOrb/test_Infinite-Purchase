@@ -169,18 +169,18 @@ class EngineStatusPanel(QFrame):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(6)
 
-        layout.addWidget(make_header_label("Engine Status"))
+        layout.addWidget(make_header_label("엔진 상태"))
 
         grid = QGridLayout()
         grid.setSpacing(4)
 
-        self.state_k, self.state_v = make_kv_row("FSM State")
-        self.score_k, self.score_v = make_kv_row("Score")
-        self.trans_k, self.trans_v = make_kv_row("Transition Day")
-        self.hold_k, self.hold_v   = make_kv_row("SOXS Hold Days")
-        self.dd_k, self.dd_v       = make_kv_row("Deep Drawdown")
-        self.trail_k, self.trail_v = make_kv_row("Trail Stage")
-        self.recon_k, self.recon_v = make_kv_row("Last Reconcile")
+        self.state_k, self.state_v = make_kv_row("레짐 상태")
+        self.score_k, self.score_v = make_kv_row("추세 점수")
+        self.trans_k, self.trans_v = make_kv_row("전환 일차")
+        self.hold_k, self.hold_v   = make_kv_row("SOXS 보유일")
+        self.dd_k, self.dd_v       = make_kv_row("심화 낙폭")
+        self.trail_k, self.trail_v = make_kv_row("트레일 단계")
+        self.recon_k, self.recon_v = make_kv_row("최근 리컨실")
 
         for i, (k, v) in enumerate([
             (self.state_k, self.state_v),
@@ -219,7 +219,8 @@ class EngineStatusPanel(QFrame):
             "NEUTRAL": C.NAVY_LIGHT,
         }
         color = state_colors.get(fsm_state, C.TEXT)
-        display = fsm_state.replace("_ACTIVE", "")
+        display_map = {"BULL_ACTIVE": "상승 모드", "BEAR_ACTIVE": "하락 모드", "TRANSITION": "전환 구간", "NEUTRAL": "관망 모드"}
+        display = display_map.get(fsm_state, fsm_state)
         self.state_v.setText(display)
         self.state_v.setStyleSheet(
             f"color: {color}; font-weight: bold; background: transparent; border: none;"
@@ -228,7 +229,7 @@ class EngineStatusPanel(QFrame):
         self.score_v.setText(f"{score} / 3")
 
         if transition_day > 0:
-            self.trans_v.setText(f"Day {transition_day}")
+            self.trans_v.setText(f"{transition_day}일차")
             self.trans_v.setStyleSheet(
                 f"color: {C.ORANGE}; font-weight: bold; background: transparent; border: none;"
             )
@@ -240,14 +241,14 @@ class EngineStatusPanel(QFrame):
 
         self.hold_v.setText(str(soxs_hold_days) if soxs_hold_days else "—")
 
-        dd_text = "YES" if deep_drawdown else "NO"
+        dd_text = "예" if deep_drawdown else "아니오"
         dd_color = C.RED if deep_drawdown else C.GREEN
         self.dd_v.setText(dd_text)
         self.dd_v.setStyleSheet(
             f"color: {dd_color}; font-weight: bold; background: transparent; border: none;"
         )
 
-        self.trail_v.setText(f"Stage {trail_stage}" if trail_stage else "—")
+        self.trail_v.setText(f"{trail_stage}단계" if trail_stage else "—")
 
         ok = "OK" in reconcile_status.upper() or reconcile_status == "✓"
         rc_color = C.GREEN if ok else C.TEXT
