@@ -1,10 +1,10 @@
-# Infinite Purchase
+# Infinite Purchase — Kiwoom REST Trading UI
 
 PyQt desktop trading application for semiconductor regime trading, centered on `app.py`.
 
 Trades SOXL/SOXS using SOXX regime signals. No ML/LLM decisioning in the execution path.
 
----
+Legacy files from older architecture may remain in repository history, but product behavior is UI-first via `app.py` only.
 
 ## What This Does
 
@@ -83,19 +83,13 @@ flowchart LR
 | `db_migrations.py` | Startup schema migrations for app-specific tables |
 | `telegram_manager.py` | Telegram validation + notification sending |
 
-## Strategy Details
+- `KIWOOM_REST_BASE_URL`
+- `KIWOOM_REST_ENDPOINTS_JSON`
+- `KIWOOM_ACCOUNT`
 
-### SOXL Engine (Bull)
-- Daily accumulation via configurable slice count (default 35 slices)
-- Averaging down: 1 slice normally, 2 at -8%, 3 at -15% from avg cost
-- Trailing stop: sell 50% at -15% from peak, sell all at -25%
-  - **Peak** is defined as max(price) since position entry (or last full closure). Adding slices does not reset the peak.
+`kiwoom_rest_client.py` fails fast if endpoint mapping is not configured.
 
-### SOXS Engine (Bear)
-- Allocation capped at 30% of total capital
-- Take-profit at +8%, max holding 25 days
-- Loss cuts at -15% (half) and -25% (all)
-- **Cooldown**: after a max-holding forced close, new SOXS buys are blocked for 3 days (configurable via `soxs_cooldown_days`), even if BEAR state persists. Cooldown state is persisted in SQLite and survives restarts.
+## Security
 
 ### Vampire Rebalance
 When SOXL drawdown exceeds the injection threshold during BEAR regime and a SOXS position closes at profit:
