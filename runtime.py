@@ -43,6 +43,8 @@ from kiwoom_adapter import (
     KiwoomSessionInvalidError,
 )
 from kill_switch import KillSwitch
+from telegram_manager import TelegramManager
+from telegram_settings_store import load_settings as load_telegram_settings
 from strategy_engine import DailyDecision, EffectiveState, StrategyEngine
 from trade_manager import OrderIntent, OrderSide, PositionInfo, TradeManager, TradeManagerState
 
@@ -128,6 +130,7 @@ class Runtime:
         self.trade_mgr = TradeManager()
         self.kiwoom: Optional[KiwoomAdapter] = None
         self.kill_sw: Optional[KillSwitch] = None
+        self.telegram_mgr: Optional[TelegramManager] = None
         self._timer: Optional[QTimer] = None
         self._jobs_run_today: set = set()
 
@@ -148,6 +151,7 @@ class Runtime:
 
         self.kiwoom.on_chejan(self._on_chejan)
         self._reconcile(is_startup=True)
+        self._init_telegram_notifications()
 
         self.kill_sw = KillSwitch(self.cfg, on_kill=self._handle_kill, on_resume=self._handle_resume)
         self.kill_sw.start()

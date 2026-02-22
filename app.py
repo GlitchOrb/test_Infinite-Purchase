@@ -59,6 +59,13 @@ from ui_theme import (
     regime_badge,
 )
 from auth_manager import AuthManager
+from telegram_manager import TelegramManager
+from telegram_settings_store import (
+    delete_settings as delete_telegram_settings,
+    is_supported as telegram_settings_supported,
+    load_settings as load_telegram_settings,
+    save_settings as save_telegram_settings,
+)
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +198,29 @@ class LoginPage(QWidget):
         remember_row.addWidget(self._help_btn)
         card_layout.addLayout(remember_row)
 
+        self._telegram_enable = QCheckBox("Enable Telegram notifications")
+        self._telegram_enable.setChecked(False)
+        card_layout.addWidget(self._telegram_enable)
+
+        self._telegram_token = QLineEdit()
+        self._telegram_token.setPlaceholderText("Telegram Bot Token")
+        self._telegram_token.setEchoMode(QLineEdit.Password)
+        card_layout.addWidget(self._telegram_token)
+
+        self._telegram_chat_id = QLineEdit()
+        self._telegram_chat_id.setPlaceholderText("Telegram Chat ID")
+        card_layout.addWidget(self._telegram_chat_id)
+
+        telegram_row = QHBoxLayout()
+        self._remember_telegram = QCheckBox("Remember settings")
+        telegram_row.addWidget(self._remember_telegram)
+        self._telegram_help_btn = QToolButton()
+        self._telegram_help_btn.setText("?")
+        self._telegram_help_btn.clicked.connect(self._show_telegram_help)
+        telegram_row.addStretch()
+        telegram_row.addWidget(self._telegram_help_btn)
+        card_layout.addLayout(telegram_row)
+
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setFixedHeight(4)
@@ -237,7 +267,16 @@ class LoginPage(QWidget):
         self._status.setStyleSheet(f"color: {C.ORANGE}; border: none;")
         self._progress.show()
         self._btn.setEnabled(False)
-        self.parent().parent()._begin_login(app_key, app_secret, account_no, self._remember.isChecked())  # type: ignore
+        self.parent().parent()._begin_login(
+            app_key,
+            app_secret,
+            account_no,
+            self._remember.isChecked(),
+            self._telegram_enable.isChecked(),
+            self._telegram_token.text().strip(),
+            self._telegram_chat_id.text().strip(),
+            self._remember_telegram.isChecked(),
+        )  # type: ignore
 
     def _on_demo_clicked(self) -> None:
         self._status.setText("Demo mode — no broker")
@@ -253,15 +292,24 @@ class LoginPage(QWidget):
 
     def set_remember_supported(self, enabled: bool) -> None:
         self._remember.setEnabled(enabled)
+        self._remember_telegram.setEnabled(enabled)
         if not enabled:
             self._remember.setChecked(False)
             self._remember.setToolTip("Remember login is supported on Windows only")
+            self._remember_telegram.setChecked(False)
+            self._remember_telegram.setToolTip("Remember settings is supported on Windows only")
 
     def prefill_credentials(self, app_key: str, app_secret: str, account_no: str) -> None:
         self._app_key.setText(app_key)
         self._app_secret.setText(app_secret)
         self._account_no.setText(account_no)
         self._remember.setChecked(True)
+
+    def prefill_telegram(self, enabled: bool, token: str, chat_id: str) -> None:
+        self._telegram_enable.setChecked(enabled)
+        self._telegram_token.setText(token)
+        self._telegram_chat_id.setText(chat_id)
+        self._remember_telegram.setChecked(enabled)
 
 
 # ======================================================================= #
@@ -586,6 +634,7 @@ class MainWindow(QMainWindow):
         # Broker client (None in guest mode)
         self.kiwoom = None
         self.auth = AuthManager()
+        self.telegram_mgr: Optional[TelegramManager] = None
         self._guest_mode = False
 
         # Page stack: 0=login, 1=dashboard
@@ -597,6 +646,10 @@ class MainWindow(QMainWindow):
         saved = self.auth.try_restore_saved_login()
         if saved:
             self._login_page.prefill_credentials(*saved)
+        telegram_saved = load_telegram_settings()
+        if telegram_saved:
+            tkn, cid, en = telegram_saved
+            self._login_page.prefill_telegram(en, tkn, cid)
         self._login_page.login_success.connect(self._on_login_success)
         self._stack.addWidget(self._login_page)
 
@@ -615,7 +668,17 @@ class MainWindow(QMainWindow):
     #  Login flow
     # ------------------------------------------------------------------ #
 
-    def _begin_login(self, app_key: str, app_secret: str, account_no: str, remember_login: bool) -> None:
+    def _begin_login(
+        self,
+        app_key: str,
+        app_secret: str,
+        account_no: str,
+        remember_login: bool,
+        telegram_enabled: bool,
+        telegram_token: str,
+        telegram_chat_id: str,
+        remember_telegram: bool,
+    ) -> None:
         """Called by LoginPage when user clicks REST connect."""
         try:
             self.kiwoom = self.auth.start_live_mode(
@@ -626,16 +689,35 @@ class MainWindow(QMainWindow):
             )
             self._guest_mode = False
             object.__setattr__(self.cfg, "kiwoom_account", account_no)
+
+            self.telegram_mgr = None
+            object.__setattr__(self.cfg, "telegram_token", "")
+            object.__setattr__(self.cfg, "telegram_chat_id", "")
+            if telegram_enabled:
+                tg = TelegramManager(telegram_token, telegram_chat_id, enabled=True)
+                tg.validate_token()
+                tg.send_test_message()
+                self.telegram_mgr = tg
+                object.__setattr__(self.cfg, "telegram_token", telegram_token)
+                object.__setattr__(self.cfg, "telegram_chat_id", telegram_chat_id)
+                if remember_telegram and telegram_settings_supported():
+                    save_telegram_settings(telegram_token, telegram_chat_id, True)
+            else:
+                delete_telegram_settings()
+
             self._login_page.set_status("Connected (REST) ✓", C.GREEN)
             self._login_page.login_success.emit()
         except Exception as e:
-            log.exception("REST login error")
-            self._login_page.set_status(f"Error: {e}", C.RED)
+            self.telegram_mgr = None
+            object.__setattr__(self.cfg, "telegram_token", "")
+            object.__setattr__(self.cfg, "telegram_chat_id", "")
             self.kiwoom = None
             self._guest_mode = False
+            self._login_page.set_status(f"Error: {e}", C.RED)
 
     def _begin_guest_mode(self) -> None:
         self.auth.start_guest_mode()
+        self.telegram_mgr = None
         self.kiwoom = None
         self._guest_mode = True
 
@@ -669,6 +751,10 @@ class MainWindow(QMainWindow):
     def logout_live_mode(self) -> None:
         """Clear secure credentials/session and disable live trading."""
         self.auth.logout()
+        self.telegram_mgr = None
+        delete_telegram_settings()
+        object.__setattr__(self.cfg, "telegram_token", "")
+        object.__setattr__(self.cfg, "telegram_chat_id", "")
         self.kiwoom = None
         self._guest_mode = True
         set_emergency_stop(self.conn, True)
