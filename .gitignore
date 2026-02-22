@@ -2,9 +2,30 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Local DB artifacts
 runtime.db
+*.db
 *.db-wal
 *.db-shm
+
+# Local/env secrets
 .env
+.env.*
+*.env
+secrets.json
+credentials.json
+local_settings.json
+
+# IDE
 .vscode/
 .idea/
+
+# Build/dist
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+Thumbs.db

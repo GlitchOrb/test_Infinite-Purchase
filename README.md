@@ -1,14 +1,14 @@
 # Infinite Purchase
 
-Rule-based semiconductor sector rotation system that runs on Kiwoom OpenAPI+.
+PyQt desktop trading application for semiconductor regime trading, centered on `app.py`.
 
-Trades SOXL/SOXS based on SOXX regime signals. No ML, no LLM — pure Dual-Momentum logic with a finite state machine.
+Trades SOXL/SOXS using SOXX regime signals. No ML/LLM decisioning in the execution path.
 
 ---
 
 ## What This Does
 
-Watches SOXX daily close. Computes a Dual-Momentum regime score from three signals:
+The strategy watches SOXX daily close and computes a Dual-Momentum regime score from three signals:
 
 | Signal | Definition |
 |--------|-----------|
@@ -16,7 +16,7 @@ Watches SOXX daily close. Computes a Dual-Momentum regime score from three signa
 | M | SMA50 > SMA200 |
 | A | 12-month absolute momentum > 0 |
 
-Score = L + M + A (range 0–3). SMA20 is computed for chart display but does **not** affect scoring.
+Score = L + M + A (range 0–3). SMA20 is calculated for charting and context, not for regime scoring.
 
 | Score | Regime | Action |
 |-------|--------|--------|
@@ -28,35 +28,60 @@ When flipping from BEAR → BULL, a 3-day transition swap runs: wind down SOXS, 
 
 ## Architecture
 
-```
-SOXX OHLCV
-    │
-    ▼
-StrategyEngine        # regime FSM (L/M/A → score → state)
-    │
-    ▼
-TradeManager          # position logic → OrderIntent[]
-    │
-    ▼
-Runtime               # Kiwoom COM + SQLite + scheduler
-    │
-    ├── KiwoomAdapter     PyQt5 QAxWidget, rate-limited
-    ├── SQLite            positions, orders, fills, idempotency locks
-    ├── Scheduler         QTimer-based, DST-aware US market hours
-    └── KillSwitch        Telegram /kill + /resume
+The production runtime is **app-first**:
+
+- **Entry point:** `python app.py`
+- **UI shell:** `MainWindow` + `LoginPage` + `TradingScreen`
+- **Login flow:** `LoginPage` collects App Key / App Secret / Account Number and Telegram settings, then calls `MainWindow.begin_live(...)` or `MainWindow.begin_guest()`.
+- **Mode execution model:**
+  - **Guest:** chart/indicator UI only, no trading execution
+  - **Paper:** `PaperBroker` simulation for orders/fills/account
+  - **Live:** `KiwoomRestBroker` for authenticated account/order flow
+- **Auto stack:** `AutoTradingController` uses `StrategyEngine` + `TradeManager` outputs to place broker orders under emergency-stop gates.
+- **Conditions:** `ConditionEngine` stores and executes condition orders with emergency-stop awareness.
+- **Persistence:** SQLite initialized at startup (`init_db` + `run_migrations`).
+
+### Architecture Diagram
+
+```mermaid
+flowchart LR
+  U[PyQt App\napp.py] --> TS[TradingScreen]
+  U --> LG[LoginPage\nApp Key/Secret/Account\nTelegram Settings]
+
+  TS --> AC[Auto Controller\nAutoTradingController]
+  TS --> CE[Condition Engine]
+  AC --> SE[StrategyEngine]
+  AC --> TM[TradeManager]
+
+  TM --> PB[PaperBroker]
+  TM --> KB[Kiwoom REST Broker]
+  CE --> PB
+  CE --> KB
+
+  PB --> DB[(SQLite\npaper_orders\npaper_fills\nlive_orders\nindicator_settings\nui_settings\ncondition_orders\ntelegram_settings_meta)]
+  KB --> DB
+  TS --> DB
+  AC --> DB
+  CE --> DB
+
+  U --> TG[Telegram Manager]
+  TG --> U
 ```
 
 ## Key Modules
 
 | File | What |
 |------|------|
+| `app.py` | Main PyQt entrypoint; login + mode bootstrap (`begin_live` / `begin_guest`) |
+| `pages/trading_screen.py` | Main trading UI, broker routing, auto toggle, reconcile live gate |
+| `auto/auto_trading_controller.py` | Periodic auto execution orchestration |
 | `strategy_engine.py` | Dual-Momentum indicators, regime scoring (L+M+A), FSM transitions |
-| `trade_manager.py` | Slice-based buying, trailing stops, take-profit, vampire rebalance, cooldown |
-| `runtime.py` | 24/7 orchestrator — scheduling, reconcile, fill processing |
-| `kiwoom_adapter.py` | Kiwoom OpenAPI+ COM wrapper with backoff + token bucket |
-| `db.py` | SQLite schema + CRUD + idempotent daily action locks |
-| `kill_switch.py` | Telegram polling — emergency stop / resume |
-| `config.py` | All tunables in one place (including `KiwoomTrConfig` for overseas TR IDs) |
+| `trade_manager.py` | Position/order intent logic (slices, exits, cooldown, rebalance) |
+| `conditions/condition_engine.py` | Condition-order persistence and trigger execution |
+| `broker/paper_broker.py` | Local paper account/order/fill broker |
+| `broker/kiwoom_rest_broker.py` | Kiwoom REST broker implementation |
+| `db_migrations.py` | Startup schema migrations for app-specific tables |
+| `telegram_manager.py` | Telegram validation + notification sending |
 
 ## Strategy Details
 
@@ -86,143 +111,85 @@ Injection is capped by remaining SOXL slice capacity. Budget persists across run
 
 ## Safety
 
-- **Idempotent buys** — SQLite `INSERT OR IGNORE` lock per (date, symbol). No double buys even on crash/restart.
-- **Reconcile** — broker holdings vs. DB on every startup + every 15 min. Mismatch → emergency stop + cancel all + Telegram alert.
-- **Orphan cleanup** — unfilled orders cancelled at EOD+5min, locks rolled back.
-- **Rate limiting** — token bucket (1 req/s) + exponential backoff up to 30s cap.
-- **Kill switch** — Telegram `/kill` persists to SQLite, survives restarts.
-- **TR validation** — Kiwoom TR IDs are centralised in `KiwoomTrConfig`. On startup, placeholder TR IDs are detected and trading is disabled (emergency stop) with a clear log message until real TR codes are plugged in.
+- **Idempotent actions** via DB lock keys for buy-path actions.
+- **Emergency-stop gating**: auto execution and manual live flow are blocked when emergency stop is active.
+- **Reconcile-first live safety**: live mode performs broker-vs-DB position checks; mismatch triggers fail-safe.
+- **Fail-safe behavior**: reconcile mismatch keeps emergency stop active and sends alert path when configured.
+- **Secret hygiene**: credentials are entered in UI and should never be logged.
 
-## Setup
-
-```
-pip install pyqt5 pandas requests
-```
-
-Requires Kiwoom OpenAPI+ installed (Windows only).
-
-```
-set KIWOOM_ACCOUNT=your_account_number
-set TELEGRAM_TOKEN=your_bot_token
-set TELEGRAM_CHAT_ID=your_chat_id
-
-python runtime.py
-```
-
-## Tests
-
-```
-pytest test_strategy_engine.py test_trade_manager.py test_integration.py -v
-```
-
-91 tests covering:
-- Dual-Momentum indicator computation (L, M, A), score logic
-- FSM transitions (all regime paths including 3-day swap)
-- Trailing stops (peak persistence, stage one-shot, full exit reset)
-- Take-profit, loss cuts, averaging down, slice capping
-- SOXS cooldown (forced close → blocked rebuy → expiry → allowed)
-- Vampire rebalance (dynamic ratio at -40%/-50%, injection cap, budget persistence)
-- Fill application + position resets
-- Sell deduplication, determinism, immutability
-- Integration: kill switch idempotency, reconcile mismatch, cooldown with DB persistence
-- KiwoomTrConfig placeholder validation
-
-## Notes
-
-- All Kiwoom-specific TR codes are centralised in `KiwoomTrConfig` with placeholder values. Replace them with the correct 해외주식 TR IDs for your account type before going live.
-- `runtime.py` is a working skeleton. The strategy + trade logic is fully implemented and tested.
-- No margin. Cash only. One buy per symbol per day.
-
-## License
-
-MIT — not financial or legal advice.
-
-## Runtime Rules Clarifications
-
-### Regime Scoring Formula
-- `L = 1` when `close > SMA200`, else `0`
-- `M = 1` when `SMA50 > SMA200`, else `0`
-- `A = 1` when `12M momentum > 0`, else `0`
-- `score = L + M + A` (0..3)
-
-### SOXS Cooldown Rule
-After a `MAX_HOLDING_EXIT` on SOXS, runtime sets `soxs_cooldown_remaining=soxs_cooldown_days`.
-While cooldown is positive, SOXS buy intents are suppressed.
-
-### Carry Budget Reset Rule
-`injection_budget` is bounded by remaining SOXL slice capacity:
-
-`max_inject = (soxl_max_slices - soxl_slices_used) * soxl_slice_notional`
-
-On each realized SOXS profit event, the budget update is capped so it cannot grow unbounded.
-
-## Selected Configuration Parameters
-- `RuntimeConfig.reconcile_interval_min`: periodic reconcile cadence.
-- `RuntimeConfig.kill_resume_passcode`: Telegram resume passcode.
-- `TradeManagerConfig.soxs_cooldown_days`: SOXS post-forced-close buy cooldown.
-- `TradeManagerConfig.soxl_slice_notional`: cap reference for persisted injection budget.
-
-## Deployment (FastAPI + Uvicorn + systemd)
-1. Install dependencies: `pip install fastapi uvicorn[standard]`
-2. Run API server: `uvicorn api_server:app --host 0.0.0.0 --port 8000`
-3. Example systemd service:
-
-```ini
-[Unit]
-Description=Alpha Predator API
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/alpha-predator
-ExecStart=/usr/bin/uvicorn api_server:app --host 0.0.0.0 --port 8000
-Restart=always
-User=trader
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## Architecture Diagram
-
-```mermaid
-flowchart LR
-  S[StrategyEngine] --> T[TradeManager]
-  T --> R[Runtime Scheduler/Reconcile]
-  R --> DB[(SQLite)]
-  R --> B[Broker Adapter]
-  R --> K[Telegram Kill Switch]
-  A[FastAPI api_server] --> DB
-  A --> R
-```
-
-## Sequence Chart (Resume/Reconcile Safety)
+### Sequence Chart (Resume/Reconcile Safety)
 
 ```mermaid
 sequenceDiagram
   participant TG as Telegram
-  participant KS as KillSwitch
-  participant RT as Runtime
+  participant APP as PyQt App (app.py)
+  participant AC as AutoController
+  participant BR as Broker
   participant DB as SQLite
 
-  TG->>KS: /resume <passcode>
-  KS->>RT: _handle_resume()
-  RT->>RT: _reconcile(is_startup=False)
-  alt mismatch remains
-    RT->>DB: emergency_stop=True
-    RT->>KS: send_alert("RESUME DENIED")
-  else clean
-    RT->>DB: emergency_stop=False
-    RT->>KS: send_alert("RESUME successful")
+  TG->>APP: resume request
+  APP->>AC: request resume + reconcile gate
+  AC->>BR: fetch live positions/account state
+  AC->>DB: fetch persisted positions/state
+  alt mismatch detected
+    AC->>DB: emergency_stop = true
+    AC-->>APP: RESUME_DENIED
+    APP-->>TG: deny resume (mismatch)
+  else clean reconcile
+    AC->>DB: emergency_stop = false
+    AC-->>APP: resume allowed
+    APP-->>TG: resume accepted
   end
 ```
 
-## Risk & Operational Notes
-- Never clear emergency stop without a successful reconcile.
-- Treat balance fetch failure as a critical fault: stop buys and raise alert.
-- Avoid logging secrets (Telegram passcodes, raw sensitive payloads).
-- Keep SOXS exits single-intent per cycle to prevent duplicate sells.
+## Setup
 
+```bash
+pip install -r requirements.txt
+python app.py
+```
+
+### Runtime startup behavior
+
+- `app.py` opens SQLite and runs DB migrations at startup (`init_db` + `run_migrations`).
+- Migration-managed tables include:
+  - `paper_orders`
+  - `paper_fills`
+  - `live_orders`
+  - `indicator_settings`
+  - `ui_settings`
+  - `condition_orders`
+  - `telegram_settings_meta`
+
+### Credentials and secrets
+
+- Kiwoom App Key / App Secret / Account Number are entered in the **login UI**.
+- Telegram token/chat settings are entered in the same login flow when notifications are enabled.
+- Do **not** hardcode secrets in source.
+- Do **not** print/log raw secrets or tokens.
+- Do **not** persist plaintext secrets in SQLite.
+
+### Environment variables
+
+- Endpoint/base URL and non-secret runtime configuration may still be supplied via environment variables where applicable.
+- Treat secrets as interactive UI inputs unless your deployment policy enforces a secure secret store.
+
+## Tests
+
+```bash
+pytest -v
+```
+
+## Notes
+
+- `runtime.py` and legacy COM-era modules may still exist for historical compatibility/testing, but primary end-user operation is app-first via `app.py`.
+- Guest mode is non-trading.
+- Paper mode uses `PaperBroker` simulation.
+- Live mode uses `KiwoomRestBroker`.
+
+## License
+
+MIT — not financial or legal advice.
 
 ## Windows EXE 빌드 (PyInstaller)
 
@@ -249,6 +216,6 @@ py build_exe.py
 
 ### 3) 실행 시 주의사항
 
-- Kiwoom OpenAPI+ 환경(Windows, OCX 설치)이 준비되어 있어야 실거래 연결이 가능합니다.
-- Telegram/DB 경로 등 환경변수는 EXE 실행 전 시스템 환경변수로 설정하세요.
+- 라이브 실행 전 Kiwoom REST 인증 정보(App Key/Secret/Account)를 로그인 화면에서 입력해야 합니다.
+- Telegram 알림 사용 시 토큰/채팅 ID를 로그인 화면에서 설정하세요.
 - 아이콘 리소스(`icon.ico`, `icon.png`)는 빌드 스크립트가 자동 포함합니다.
