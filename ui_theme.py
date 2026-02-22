@@ -178,7 +178,8 @@ def regime_badge(state: str) -> QLabel:
         "TRANSITION":   (C.ORANGE, "#FFFFFF"),
         "NEUTRAL":      (C.NAVY_LIGHT, "#FFFFFF"),
     }
-    label = state.replace("_ACTIVE", "")
+    label_map = {"BULL_ACTIVE": "상승 모드", "BEAR_ACTIVE": "하락 모드", "TRANSITION": "전환 구간", "NEUTRAL": "관망 모드"}
+    label = label_map.get(state, state.replace("_ACTIVE", ""))
     bg, fg = colors.get(state, (C.TEXT_MUTED, "#FFFFFF"))
     return make_badge(label, bg, fg)
 

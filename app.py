@@ -480,7 +480,7 @@ class DashboardPage(QWidget):
             TradeMarker(x=80, price=price[80], symbol="SOXL", side="BUY",
                         reason="Avg down -8%"),
             TradeMarker(x=120, price=price[120], symbol="SOXL", side="SELL",
-                        reason="Trailing -15%"),
+                        reason="📉 트레일링 스탑 조건 충족 — 부분 청산 실행"),
             TradeMarker(x=150, price=price[150], symbol="SOXS", side="BUY",
                         reason="Bear regime entry"),
             TradeMarker(x=170, price=price[170], symbol="SOXS", side="SELL",
@@ -699,7 +699,7 @@ class MainWindow(QMainWindow):
                                    str(tm_state.injection_budget))
                         self.conn.commit()
                         self._dashboard.activity.append(
-                            f"Vampire inject: +${realized:.2f}"
+                            f"🩸 수익 재투입 실행 — SOXL 평단가 하향 조정 (+${realized:.2f})"
                         )
 
             # Refresh UI

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import logging
 import sqlite3
 
 from db import get_alert, init_db
@@ -50,23 +50,42 @@ def test_env_aliases_supported(monkeypatch):
     assert cfg.allowed_chat_ids == {"-1001"}
 
 
-def test_unauthorized_user_rejected():
+def test_unauthorized_user_rejected_korean():
     rt = FakeRuntime()
     b = _bot(rt)
     b._handle_command({"chat": {"id": "100"}, "from": {"id": 999}, "text": "/kill"})
-    assert any("Unauthorized" in m[1].get("text", "") for m in b.sent)
+    assert any("권한 없음" in m[1].get("text", "") for m in b.sent)
     assert rt.killed is False
 
 
-def test_admin_kill_resume_sequence():
+def test_admin_kill_resume_sequence_korean_messages():
     rt = FakeRuntime()
     b = _bot(rt)
     b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/kill"})
     b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/resume ok"})
     assert rt.killed is True
     out = "\n".join(x[1].get("text", "") for x in b.sent)
-    assert "Kill switch activated" in out
-    assert "Resume accepted" in out
+    assert "긴급 정지 모드" in out
+    assert "시스템이 정상적으로 재개" in out
+
+
+def test_resume_fail_message_korean():
+    rt = FakeRuntime()
+    rt.resume_ok = False
+    b = _bot(rt)
+    b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/resume ok"})
+    out = "\n".join(x[1].get("text", "") for x in b.sent)
+    assert "재개 실패" in out
+
+
+def test_status_message_contains_korean():
+    rt = FakeRuntime()
+    b = _bot(rt)
+    b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/status"})
+    out = "\n".join(x[1].get("text", "") for x in b.sent)
+    assert "시스템 상태 보고서" in out
+    assert "레짐 상태" in out
+    assert "예수금" in out
 
 
 def test_inline_actions_toggle_summary():
@@ -97,3 +116,12 @@ def test_markdown_formatting_escape():
     txt = "*Hello!* This is a test message."
     escaped = mdv2_escape(txt)
     assert escaped == "\\*Hello\\!\\* This is a test message\\."
+
+
+def test_passcode_not_logged(caplog):
+    rt = FakeRuntime()
+    b = _bot(rt)
+    with caplog.at_level(logging.INFO):
+        b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/resume my-secret-pass"})
+    logs = "\n".join(r.getMessage() for r in caplog.records)
+    assert "my-secret-pass" not in logs

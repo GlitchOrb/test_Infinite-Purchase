@@ -34,14 +34,14 @@ Webhook mode is supported via FastAPI endpoint `/telegram/webhook` and is recomm
 
 ## Commands
 
-- `/help` — command help + inline menu
-- `/status` — regime, L/M/A score, engine mode, carry/injection budgets, cooldown, PnL/MDD, NYSE session
-- `/positions` — position snapshot
-- `/balance` — total capital and forex
-- `/userinfo` — bot chat/admin config
-- `/kill` *(admin only)* — halt trading
-- `/resume <passcode>` *(admin only)* — resume after reconcile
-- `/exit` *(admin only)* — stop polling loop
+- `/help` — 사용 가능한 명령어 안내
+- `/status` — 한국어 시스템 상태 보고서
+- `/positions` — 보유 종목/수량/평균단가
+- `/balance` — 달러 잔고 및 환율
+- `/userinfo` — 봇 설정 정보
+- `/kill` *(관리자 전용)* — 긴급 정지
+- `/resume <비밀번호>` *(관리자 전용)* — 리컨실 후 재개
+- `/exit` *(관리자 전용)* — 폴링 루프 종료
 - `/set_drawdown_alert 20%` *(admin only)*
 - `/set_daily_summary 08:00` *(admin only)*
 

@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from urllib import request as urlrequest
 
 from db import get_alert, get_all_positions, get_latest_regime, get_system, set_alert
+from ko_messages import BUTTONS, ENGINE_MODE_KO, MESSAGES, REGIME_KO
 
 log = logging.getLogger(__name__)
 
@@ -90,21 +91,21 @@ class TelegramControlBot:
     def _main_menu(self) -> dict:
         return {
             "inline_keyboard": [
-                [{"text": "📊 Status", "callback_data": "status_refresh"}, {"text": "🛑 Kill Switch", "callback_data": "kill_confirm"}],
-                [{"text": "▶ Resume", "callback_data": "resume_invoke"}, {"text": "📈 Positions", "callback_data": "positions_show"}],
-                [{"text": "⚙ Config", "callback_data": "config_show"}, {"text": "❓ Help", "callback_data": "help_show"}],
+                [{"text": BUTTONS["status"], "callback_data": "status_refresh"}, {"text": BUTTONS["kill"], "callback_data": "kill_confirm"}],
+                [{"text": BUTTONS["resume"], "callback_data": "resume_invoke"}, {"text": BUTTONS["positions"], "callback_data": "positions_show"}],
+                [{"text": BUTTONS["config"], "callback_data": "config_show"}, {"text": BUTTONS["help"], "callback_data": "help_show"}],
             ]
         }
 
     def _status_menu(self) -> dict:
-        return {"inline_keyboard": [[{"text": "Refresh", "callback_data": "status_refresh"}, {"text": "Back", "callback_data": "back_main"}]]}
+        return {"inline_keyboard": [[{"text": BUTTONS["refresh"], "callback_data": "status_refresh"}, {"text": BUTTONS["back"], "callback_data": "back_main"}]]}
 
     def _config_menu(self) -> dict:
         return {
             "inline_keyboard": [
-                [{"text": "Toggle Daily Summaries", "callback_data": "toggle_summary"}],
-                [{"text": "Set Alert Thresholds", "callback_data": "set_threshold_drawdown"}],
-                [{"text": "Back", "callback_data": "back_main"}],
+                [{"text": BUTTONS["toggle_summary"], "callback_data": "toggle_summary"}],
+                [{"text": BUTTONS["set_threshold"], "callback_data": "set_threshold_drawdown"}],
+                [{"text": BUTTONS["back"], "callback_data": "back_main"}],
             ]
         }
 
@@ -115,40 +116,51 @@ class TelegramControlBot:
         return user_id in self.cfg.admin_user_ids
 
     def _reject(self, chat_id: str) -> None:
-        self.send_markdown(chat_id, mdv2_escape("❌ Unauthorized — this command is restricted."))
+        self.send_markdown(chat_id, mdv2_escape(MESSAGES["unauthorized"]))
 
     def _help_text(self) -> str:
-        return mdv2_escape(
-            "/help /status /positions /balance /userinfo /kill /resume <passcode> /exit "
-            "/set_drawdown_alert 20% /set_daily_summary 08:00"
-        )
+        return mdv2_escape(MESSAGES["help"])
 
     def _build_status_text(self) -> str:
         conn = self.runtime.conn
         regime = get_latest_regime(conn) or {}
-        pnl = get_system(conn, "total_pnl") or "0"
-        mdd = get_system(conn, "mdd") or "0"
+        pnl = get_system(conn, "total_pnl") or "+0.0%"
+        mdd = get_system(conn, "mdd") or "0.0%"
         carry = get_system(conn, "carry_budget") or "0"
         inject = get_system(conn, "injection_budget") or "0"
         cooldown = get_system(conn, "soxs_cooldown_remaining") or "0"
-        session = "OPEN" if datetime.now().hour in range(9, 17) else "CLOSED"
+        capital = f"${self.runtime._get_total_capital():,.0f}"
 
-        raw = (
-            f"Regime: {regime.get('effective_state', 'NEUTRAL')}\n"
-            f"Score L/M/A: {regime.get('indicator_L', 0)}/{regime.get('indicator_M', 0)}/{regime.get('indicator_A', 0)} (score={regime.get('score', 0)})\n"
-            f"Engine mode: {regime.get('engine_intent', 'NONE')}\n"
-            f"Carry budget: {carry}\nInjection budget: {inject}\n"
-            f"SOXS cooldown: {cooldown}\n"
-            f"PnL: {pnl} | MDD: {mdd}\n"
-            f"NYSE session: {session}"
+        raw_state = regime.get("effective_state", "NEUTRAL")
+        raw_mode = regime.get("engine_intent", "NONE")
+        state_ko = REGIME_KO.get(raw_state, REGIME_KO["NEUTRAL"])
+        mode_ko = ENGINE_MODE_KO.get(raw_mode, "대기")
+        state_emoji = "🟢" if raw_state == "BULL_ACTIVE" else "🔴" if raw_state == "BEAR_ACTIVE" else "🟡"
+
+        body = (
+            f"{MESSAGES['status_title']}\n"
+            f"{MESSAGES['status_sep']}\n"
+            f"레짐 상태: {state_emoji} {state_ko}\n"
+            f"점수: L/M/A = {regime.get('indicator_L', 0)}/{regime.get('indicator_M', 0)}/{regime.get('indicator_A', 0)}\n"
+            f"엔진 모드: {mode_ko}\n"
+            f"누적 손익: {pnl}\n"
+            f"현재 MDD: {mdd}\n"
+            f"예수금: {capital}\n"
+            f"SOXS 쿨다운: {cooldown}일 남음\n"
+            f"캐리 버짓: {carry} / 인젝션 버짓: {inject}\n"
+            f"{MESSAGES['status_sep']}"
         )
-        return mdv2_escape(raw)
+        return mdv2_escape(body)
+
 
     def _positions_text(self) -> str:
         rows = get_all_positions(self.runtime.conn)
         if not rows:
-            return mdv2_escape("No positions")
-        return mdv2_escape("\n".join(f"{r['symbol']}: qty={r['qty']}, avg={r['avg_cost']}" for r in rows))
+            return mdv2_escape(MESSAGES["no_positions"])
+        body = [MESSAGES["positions_title"], MESSAGES["status_sep"]]
+        body.extend(f"{r['symbol']}: 수량={r['qty']}, 평균단가={r['avg_cost']}" for r in rows)
+        body.append(MESSAGES["status_sep"])
+        return mdv2_escape("\n".join(body))
 
     def _balance_text(self) -> str:
         capital = self.runtime._get_total_capital()
@@ -158,10 +170,10 @@ class TelegramControlBot:
                 fx = str(self.runtime.kis.fetch_usdkrw())
             except Exception:
                 fx = "ERR"
-        return mdv2_escape(f"Balance: {capital}\nUSD/KRW: {fx}")
+        return mdv2_escape(f"{MESSAGES['balance_title']}\n{MESSAGES['status_sep']}\n달러 잔고: {capital}\nUSD/KRW 환율: {fx}\n{MESSAGES['status_sep']}")
 
     def _userinfo_text(self) -> str:
-        return mdv2_escape(f"chat_ids={sorted(self.cfg.allowed_chat_ids)}\nadmins={sorted(self.cfg.admin_user_ids)}")
+        return mdv2_escape(f"{MESSAGES['userinfo']}\n{MESSAGES['status_sep']}\nchat_id 목록={sorted(self.cfg.allowed_chat_ids)}\n관리자 목록={sorted(self.cfg.admin_user_ids)}\n{MESSAGES['status_sep']}")
 
     def _handle_command(self, msg: dict) -> None:
         chat_id = str(msg.get("chat", {}).get("id", ""))
@@ -172,8 +184,8 @@ class TelegramControlBot:
 
         if self._pending_resume_user == user_id and not text.startswith("/"):
             ok, response = self.runtime.handle_resume(text)
-            log.info("Resume command verified=%s", ok)
-            self.send_markdown(chat_id, mdv2_escape(response))
+            log.info(MESSAGES["log_resume_verified"].format(ok=ok))
+            self.send_markdown(chat_id, mdv2_escape(MESSAGES["resume_ok"] if ok else MESSAGES["resume_fail"]))
             self._pending_resume_user = None
             return
 
@@ -193,23 +205,23 @@ class TelegramControlBot:
                 return
             pct = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else "20%"
             set_alert(self.runtime.conn, "drawdown_alert", pct)
-            self.send_markdown(chat_id, mdv2_escape(f"Drawdown alert set: {pct}"))
+            self.send_markdown(chat_id, mdv2_escape(MESSAGES["drawdown_set"].format(pct=pct)))
         elif text.startswith("/set_daily_summary"):
             if not self._is_admin(user_id):
                 self._reject(chat_id)
                 return
             hhmm = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else "08:00"
             if not re.match(r"^\d{2}:\d{2}$", hhmm):
-                self.send_markdown(chat_id, mdv2_escape("Invalid time format. Use HH:MM"))
+                self.send_markdown(chat_id, mdv2_escape(MESSAGES["invalid_time"]))
                 return
             set_alert(self.runtime.conn, "daily_summary_time", hhmm)
-            self.send_markdown(chat_id, mdv2_escape(f"Daily summary time set: {hhmm}"))
+            self.send_markdown(chat_id, mdv2_escape(MESSAGES["summary_time_set"].format(hhmm=hhmm)))
         elif text.startswith("/kill"):
             if not self._is_admin(user_id):
                 self._reject(chat_id)
                 return
             self.runtime.handle_kill_command()
-            self.send_markdown(chat_id, mdv2_escape("🚨 Kill switch activated — trading halted."))
+            log.info(MESSAGES["log_kill"]); self.send_markdown(chat_id, mdv2_escape(MESSAGES["kill"]))
         elif text.startswith("/resume"):
             if not self._is_admin(user_id):
                 self._reject(chat_id)
@@ -217,17 +229,17 @@ class TelegramControlBot:
             parts = text.split(maxsplit=1)
             if len(parts) == 1:
                 self._pending_resume_user = user_id
-                self.send_markdown(chat_id, mdv2_escape("Send passcode in next message."))
+                self.send_markdown(chat_id, mdv2_escape(MESSAGES["resume_prompt"]))
                 return
             ok, response = self.runtime.handle_resume(parts[1].strip())
-            log.info("Resume command verified=%s", ok)
-            self.send_markdown(chat_id, mdv2_escape(response))
+            log.info(MESSAGES["log_resume_verified"].format(ok=ok))
+            self.send_markdown(chat_id, mdv2_escape(MESSAGES["resume_ok"] if ok else MESSAGES["resume_fail"]))
         elif text.startswith("/exit"):
             if not self._is_admin(user_id):
                 self._reject(chat_id)
                 return
             self._running = False
-            self.send_markdown(chat_id, mdv2_escape("Bot loop stopping."))
+            self.send_markdown(chat_id, mdv2_escape(MESSAGES["exit"]))
 
     def _handle_callback(self, cb: dict) -> None:
         data = cb.get("data", "")
@@ -244,24 +256,24 @@ class TelegramControlBot:
                 self._reject(chat_id)
                 return
             self.runtime.handle_kill_command()
-            self.edit_markdown(chat_id, message_id, mdv2_escape("🚨 Kill switch activated — trading halted."), self._main_menu())
+            log.info(MESSAGES["log_kill"]); self.edit_markdown(chat_id, message_id, mdv2_escape(MESSAGES["kill"]), self._main_menu())
         elif data == "resume_invoke":
             if not self._is_admin(user_id):
                 self._reject(chat_id)
                 return
             self._pending_resume_user = user_id
-            self.edit_markdown(chat_id, message_id, mdv2_escape("Enter resume passcode in next message."), self._main_menu())
+            self.edit_markdown(chat_id, message_id, mdv2_escape(MESSAGES["resume_prompt"]), self._main_menu())
         elif data == "toggle_summary":
             current = get_alert(self.runtime.conn, "daily_summary_enabled", "true")
             new = "false" if current == "true" else "true"
             set_alert(self.runtime.conn, "daily_summary_enabled", new)
-            self.edit_markdown(chat_id, message_id, mdv2_escape(f"Daily summaries: {new}"), self._config_menu())
+            self.edit_markdown(chat_id, message_id, mdv2_escape(MESSAGES["daily_summary_on"] if new == "true" else MESSAGES["daily_summary_off"]), self._config_menu())
         elif data.startswith("set_threshold_"):
             name = data.replace("set_threshold_", "")
             set_alert(self.runtime.conn, f"threshold_{name}", "20%")
             self.edit_markdown(chat_id, message_id, mdv2_escape(f"Threshold updated: {name}"), self._config_menu())
         elif data == "config_show":
-            self.edit_markdown(chat_id, message_id, mdv2_escape("Config menu"), self._config_menu())
+            self.edit_markdown(chat_id, message_id, mdv2_escape(MESSAGES["config_menu"]), self._config_menu())
         elif data in {"help_show", "back_main"}:
             self.edit_markdown(chat_id, message_id, self._help_text(), self._main_menu())
 
@@ -273,22 +285,29 @@ class TelegramControlBot:
             self._handle_command(update["message"])
 
     def notify_regime_change(self, state: str, score: int) -> None:
-        emoji = "🟢" if state == "BULL" else "🔴" if state == "BEAR" else "🟡"
-        self.broadcast(f"{emoji} Regime changed to {state} (score={score})")
+        if state == "BULL":
+            log.info(MESSAGES["log_regime_bull"])
+            self.broadcast(f"🟢 레짐이 상승 모드로 변경되었습니다 \(score={score}\)")
+        elif state == "BEAR":
+            log.info(MESSAGES["log_regime_bear"])
+            self.broadcast(f"🔴 레짐이 하락 모드로 변경되었습니다 \(score={score}\)")
+        else:
+            self.broadcast(f"🟡 레짐이 중립 상태입니다 \(score={score}\)")
 
     def notify_order_execution(self, side: str, symbol: str, price: float, qty_text: str) -> None:
         icon = "📈" if side == "BUY" else "📉"
-        self.broadcast(f"{icon} {side} ORDER executed: {symbol} @ {price:.2f} × {qty_text}")
+        side_ko = "매수" if side == "BUY" else "매도"
+        self.broadcast(f"{icon} {side_ko} 주문 체결: {symbol} @ {price:.2f} × {qty_text}")
 
     def notify_stop_resume(self, stopped: bool, reason: str) -> None:
-        msg = "🚨 Emergency stop triggered" if stopped else "✅ System resumed after successful reconcile"
-        self.broadcast(f"{msg} — {reason}")
+        msg = MESSAGES["kill"] if stopped else MESSAGES["resume_ok"]
+        self.broadcast(f"{msg} \- {reason}")
 
     def notify_risk(self, text: str) -> None:
-        self.broadcast(f"⚠️ Risk alert: {text}")
+        self.broadcast(f"⚠️ 리스크 경고: {text}")
 
     def notify_periodic_summary(self, period: str, text: str) -> None:
-        self.broadcast(f"🧾 {period} summary\n{text}")
+        self.broadcast(f"🧾 {period} 요약\n{text}")
 
     def broadcast(self, raw_text: str) -> None:
         text = mdv2_escape(raw_text)

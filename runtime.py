@@ -287,7 +287,7 @@ class Runtime:
 
     def _job_daily_buy(self) -> None:
         if is_emergency_stop(self.conn):
-            log.warning("Emergency stop active — skipping daily buy")
+            log.warning("🚨 긴급 정지 모드가 활성화되었습니다. 일일 매수를 건너뜁니다.")
             return
 
         today_str = _eastern_now(self.cfg).strftime("%Y-%m-%d")
@@ -433,7 +433,7 @@ class Runtime:
     def _execute_intent(self, intent: OrderIntent, today_str: str) -> None:
         """Translate an OrderIntent into a Kiwoom order + SQLite records."""
         if is_emergency_stop(self.conn):
-            log.warning("Emergency stop — dropping intent: %s", intent.reason)
+            log.warning("🚨 긴급 정지 모드가 활성화되었습니다. 주문 의도를 폐기합니다: %s", intent.reason)
             return
 
         action_key = f"{intent.side.value}_{intent.symbol}_{today_str}"
@@ -568,7 +568,7 @@ class Runtime:
                         )
                         _persist_tm_state(self.conn, tm_state)
                         log.info(
-                            "Vampire inject: realized=%.2f "
+                            "🩸 수익 재투입 실행 — SOXL 평단가 하향 조정: realized=%.2f "
                             "injection_budget=%.2f",
                             realized, tm_state.injection_budget,
                         )
