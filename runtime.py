@@ -77,6 +77,13 @@ def _market_close_today(cfg: RuntimeConfig) -> datetime:
                       second=0, microsecond=0)
 
 
+def _is_trading_session(cfg: RuntimeConfig) -> bool:
+    et = _eastern_now(cfg)
+    open_t = et.replace(hour=cfg.market_open_h, minute=cfg.market_open_m, second=0, microsecond=0)
+    close_t = et.replace(hour=cfg.market_close_h, minute=cfg.market_close_m, second=0, microsecond=0)
+    return open_t <= et <= close_t
+
+
 # ======================================================================= #
 #  State hydration helpers
 # ======================================================================= #
@@ -289,6 +296,9 @@ class Runtime:
         if is_emergency_stop(self.conn):
             log.warning("🚨 긴급 정지 모드가 활성화되었습니다. 일일 매수를 건너뜁니다.")
             return
+        if not _is_trading_session(self.cfg):
+            log.warning("거래 가능 시간이 아니므로 일일 매수를 건너뜁니다.")
+            return
 
         today_str = _eastern_now(self.cfg).strftime("%Y-%m-%d")
         tm_state = _load_tm_state(self.conn)
@@ -500,9 +510,11 @@ class Runtime:
 
     def _on_chejan(self, data: ChejanData) -> None:
         """Process real-time fill / order-status updates from Kiwoom."""
-        if data.gubun == "0" and data.status in ("체결", "전량체결"):
+        if data.gubun == "0" and data.status in ("체결", "전량체결", "부분체결"):
             # Fill confirmed
             insert_fill(self.conn, data.order_id, data.qty, data.price)
+            if data.status == "부분체결":
+                log.warning("부분 체결 감지 — 후속 리컨실/주문 상태 갱신 필요")
 
             side = OrderSide.BUY if "매수" in data.side else OrderSide.SELL
 
@@ -627,11 +639,11 @@ class Runtime:
     def handle_resume(self, passcode: str) -> tuple[bool, str]:
         """Public resume entry point with passcode verification."""
         if passcode != self.cfg.kill_resume_passcode:
-            return False, "Resume denied — incorrect passcode."
+            return False, "❌ 재개 실패 — 비밀번호가 올바르지 않습니다."
         self._handle_resume()
         if is_emergency_stop(self.conn):
-            return False, "Resume denied — reconcile mismatch."
-        return True, "Resume accepted"
+            return False, "❌ 재개 실패 — 포지션 불일치가 존재합니다."
+        return True, "✅ 시스템이 정상적으로 재개되었습니다."
 
     def _cancel_all_open_orders(self) -> None:
         open_orders = get_open_orders(self.conn)

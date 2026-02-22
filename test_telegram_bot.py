@@ -7,6 +7,16 @@ from db import get_alert, init_db
 from telegram_bot import TelegramBotConfig, TelegramControlBot, mdv2_escape
 
 
+class FakeKis:
+    def __init__(self):
+        self.fail = False
+
+    def fetch_usdkrw(self):
+        if self.fail:
+            raise RuntimeError("fx fail")
+        return 1350.0
+
+
 class FakeRuntime:
     def __init__(self):
         self.conn = sqlite3.connect(":memory:")
@@ -14,6 +24,7 @@ class FakeRuntime:
         self.cfg = type("Cfg", (), {"telegram_chat_id": "100"})
         self.resume_ok = True
         self.killed = False
+        self.kis = FakeKis()
 
     def handle_kill_command(self):
         self.killed = True
@@ -125,3 +136,34 @@ def test_passcode_not_logged(caplog):
         b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/resume my-secret-pass"})
     logs = "\n".join(r.getMessage() for r in caplog.records)
     assert "my-secret-pass" not in logs
+
+
+def test_callback_validation_rejects_unknown():
+    rt = FakeRuntime()
+    b = _bot(rt)
+    b._handle_callback({
+        "data": "__bad_payload__",
+        "from": {"id": 1},
+        "message": {"chat": {"id": "100"}, "message_id": 33},
+    })
+    out = "\n".join(x[1].get("text", "") for x in b.sent)
+    assert "잘못된 요청" in out
+
+
+def test_message_flood_rate_limit():
+    rt = FakeRuntime()
+    b = _bot(rt)
+    for _ in range(20):
+        b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/help"})
+    out = "\n".join(x[1].get("text", "") for x in b.sent)
+    assert "요청이 너무 많습니다" in out
+
+
+def test_fx_fallback_uses_last_known_value():
+    rt = FakeRuntime()
+    b = _bot(rt)
+    b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/balance"})
+    rt.kis.fail = True
+    b._handle_command({"chat": {"id": "100"}, "from": {"id": 1}, "text": "/balance"})
+    out = "\n".join(x[1].get("text", "") for x in b.sent)
+    assert "환율 조회 실패" in out

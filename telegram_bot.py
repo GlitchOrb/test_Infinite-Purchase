@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -56,6 +57,14 @@ class TelegramControlBot:
         self._offset = 0
         self._running = False
         self._pending_resume_user: Optional[int] = None
+        self._allowed_callbacks = {
+            "status_refresh", "kill_confirm", "resume_invoke", "toggle_summary",
+            "config_show", "help_show", "back_main", "positions_show",
+            "set_threshold_drawdown",
+        }
+        self._rate_window_s = 10
+        self._rate_limit_count = 8
+        self._user_hits: dict[int, deque[float]] = defaultdict(deque)
 
     def _api(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"https://api.telegram.org/bot{self.cfg.token}/{method}"
@@ -115,6 +124,16 @@ class TelegramControlBot:
     def _is_admin(self, user_id: int) -> bool:
         return user_id in self.cfg.admin_user_ids
 
+    def _allow_user_traffic(self, user_id: int) -> bool:
+        now = time.monotonic()
+        q = self._user_hits[user_id]
+        while q and now - q[0] > self._rate_window_s:
+            q.popleft()
+        if len(q) >= self._rate_limit_count:
+            return False
+        q.append(now)
+        return True
+
     def _reject(self, chat_id: str) -> None:
         self.send_markdown(chat_id, mdv2_escape(MESSAGES["unauthorized"]))
 
@@ -167,9 +186,14 @@ class TelegramControlBot:
         fx = "N/A"
         if hasattr(self.runtime, "kis") and self.runtime.kis:
             try:
-                fx = str(self.runtime.kis.fetch_usdkrw())
+                new_fx = self.runtime.kis.fetch_usdkrw()
+                fx = str(new_fx)
+                from db import set_system
+                set_system(self.runtime.conn, "last_usdkrw", fx)
             except Exception:
-                fx = "ERR"
+                from db import get_system
+                fx = get_system(self.runtime.conn, "last_usdkrw") or "ERR"
+                self.broadcast("⚠ 환율 조회 실패 — 이전 값을 유지합니다.")
         return mdv2_escape(f"{MESSAGES['balance_title']}\n{MESSAGES['status_sep']}\n달러 잔고: {capital}\nUSD/KRW 환율: {fx}\n{MESSAGES['status_sep']}")
 
     def _userinfo_text(self) -> str:
@@ -180,6 +204,9 @@ class TelegramControlBot:
         user_id = int(msg.get("from", {}).get("id", 0))
         text = (msg.get("text") or "").strip()
         if not self._is_authorized_chat(chat_id):
+            return
+        if not self._allow_user_traffic(user_id):
+            self.send_markdown(chat_id, mdv2_escape("⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."))
             return
 
         if self._pending_resume_user == user_id and not text.startswith("/"):
@@ -204,6 +231,9 @@ class TelegramControlBot:
                 self._reject(chat_id)
                 return
             pct = text.split(maxsplit=1)[1].strip() if len(text.split()) > 1 else "20%"
+            if not re.match(r"^\d+(\.\d+)?%$", pct):
+                self.send_markdown(chat_id, mdv2_escape("드로우다운 형식이 올바르지 않습니다. 예: 20%"))
+                return
             set_alert(self.runtime.conn, "drawdown_alert", pct)
             self.send_markdown(chat_id, mdv2_escape(MESSAGES["drawdown_set"].format(pct=pct)))
         elif text.startswith("/set_daily_summary"):
@@ -248,6 +278,13 @@ class TelegramControlBot:
         user_id = int(cb.get("from", {}).get("id", 0))
         message_id = int(msg.get("message_id", 0))
 
+        if data not in self._allowed_callbacks and not data.startswith("set_threshold_"):
+            self.send_markdown(chat_id, mdv2_escape("⚠️ 잘못된 요청입니다."))
+            return
+        if not self._allow_user_traffic(user_id):
+            self.send_markdown(chat_id, mdv2_escape("⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."))
+            return
+
         if data in {"status_refresh", "positions_show"}:
             txt = self._build_status_text() if data == "status_refresh" else self._positions_text()
             self.edit_markdown(chat_id, message_id, txt, self._status_menu())
@@ -271,7 +308,7 @@ class TelegramControlBot:
         elif data.startswith("set_threshold_"):
             name = data.replace("set_threshold_", "")
             set_alert(self.runtime.conn, f"threshold_{name}", "20%")
-            self.edit_markdown(chat_id, message_id, mdv2_escape(f"Threshold updated: {name}"), self._config_menu())
+            self.edit_markdown(chat_id, message_id, mdv2_escape(f"알림 임계치가 갱신되었습니다: {name}"), self._config_menu())
         elif data == "config_show":
             self.edit_markdown(chat_id, message_id, mdv2_escape(MESSAGES["config_menu"]), self._config_menu())
         elif data in {"help_show", "back_main"}:
@@ -287,12 +324,12 @@ class TelegramControlBot:
     def notify_regime_change(self, state: str, score: int) -> None:
         if state == "BULL":
             log.info(MESSAGES["log_regime_bull"])
-            self.broadcast(f"🟢 레짐이 상승 모드로 변경되었습니다 \(score={score}\)")
+            self.broadcast(f"🟢 레짐이 상승 모드로 변경되었습니다 (score={score})")
         elif state == "BEAR":
             log.info(MESSAGES["log_regime_bear"])
-            self.broadcast(f"🔴 레짐이 하락 모드로 변경되었습니다 \(score={score}\)")
+            self.broadcast(f"🔴 레짐이 하락 모드로 변경되었습니다 (score={score})")
         else:
-            self.broadcast(f"🟡 레짐이 중립 상태입니다 \(score={score}\)")
+            self.broadcast(f"🟡 레짐이 중립 상태입니다 (score={score})")
 
     def notify_order_execution(self, side: str, symbol: str, price: float, qty_text: str) -> None:
         icon = "📈" if side == "BUY" else "📉"
@@ -301,7 +338,7 @@ class TelegramControlBot:
 
     def notify_stop_resume(self, stopped: bool, reason: str) -> None:
         msg = MESSAGES["kill"] if stopped else MESSAGES["resume_ok"]
-        self.broadcast(f"{msg} \- {reason}")
+        self.broadcast(f"{msg} - {reason}")
 
     def notify_risk(self, text: str) -> None:
         self.broadcast(f"⚠️ 리스크 경고: {text}")
