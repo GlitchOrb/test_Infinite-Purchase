@@ -79,4 +79,13 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO telegram_settings_meta (id, enabled, chat_id_present, updated_at) VALUES (1,0,0,datetime('now'))"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS strategies ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "name TEXT UNIQUE NOT NULL,"
+        "content_json TEXT NOT NULL,"
+        "is_active INTEGER DEFAULT 0,"
+        "updated_at TEXT NOT NULL"
+        ")"
+    )
     conn.commit()

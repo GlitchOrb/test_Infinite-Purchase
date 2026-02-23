@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime
 from typing import Callable, Optional
 
@@ -17,6 +18,7 @@ from db import (
 )
 from strategy_engine import DailyDecision, EffectiveState, EngineIntent
 from trade_manager import OrderSide, TradeManager, TradeManagerState
+from risk import RiskManager, RiskConfig, VerdictAction
 
 
 class AutoTradingController(QObject):
@@ -39,6 +41,14 @@ class AutoTradingController(QObject):
         self._get_symbol_prices = get_symbol_prices
         self._alert = alert
         self.trade_mgr = TradeManager()
+        self.risk_mgr = RiskManager(
+            RiskConfig(
+                max_capital_per_trade_pct=0.10,
+                max_daily_loss_pct=0.03,
+                max_open_positions=5,
+            ),
+            initial_equity=0.0
+        )
         self.enabled = False
         self.paused = False
 
@@ -96,11 +106,23 @@ class AutoTradingController(QObject):
 
         try:
             soxl_px, soxs_px = self._get_symbol_prices()
-            total_capital = broker.get_account().cash
+            # Update RiskManager prices
+            self.risk_mgr.update_price("SOXL", soxl_px)
+            self.risk_mgr.update_price("SOXS", soxs_px)
+
+            acct = broker.get_account()
+            total_capital = acct.cash
+            
+            # Sync RiskManager state with broker
+            self.risk_mgr.reset_daily(acct.equity)
+            for p in broker.get_positions():
+                self.risk_mgr.open_position(p.symbol, p.qty, p.avg_price)
+
             tm_state = TradeManagerState()
             intents, _ = self.trade_mgr.process_day(decision, soxl_px, soxs_px, total_capital, tm_state)
             today = datetime.now().strftime("%Y-%m-%d")
             for intent in intents:
+                # Idempotency check
                 action_key = f"{intent.side.value}_{intent.symbol}_{today}"
                 if intent.side == OrderSide.BUY:
                     if not try_lock_action(self.conn, today, action_key):
@@ -113,6 +135,21 @@ class AutoTradingController(QObject):
                     if intent.side == OrderSide.BUY:
                         rollback_action(self.conn, today, action_key)
                     continue
+
+                # Risk Check
+                verdict = self.risk_mgr.check_order(
+                    side=intent.side.value,
+                    symbol=intent.symbol,
+                    qty=qty,
+                    notional=intent.notional,
+                    price=soxl_px if intent.symbol == "SOXL" else soxs_px
+                )
+                if not verdict.is_allowed:
+                    self.event_log.emit(f"RISK_REJECT {verdict.reason}")
+                    continue
+                if verdict.action == VerdictAction.REDUCE and verdict.allowed_qty is not None:
+                    qty = verdict.allowed_qty
+
                 order_type = "MARKET"
                 result = broker.place_order(intent.symbol, intent.side.value.upper(), qty, order_type)
                 self.event_log.emit(f"ORDER_RESULT {result.get('status')}")

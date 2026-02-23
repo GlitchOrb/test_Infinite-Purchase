@@ -107,6 +107,15 @@ CREATE TABLE IF NOT EXISTS alerts (
     value           TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+-- User-defined strategies
+CREATE TABLE IF NOT EXISTS strategies (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT UNIQUE NOT NULL,
+    content_json    TEXT NOT NULL,
+    is_active       INTEGER DEFAULT 0,
+    updated_at      TEXT NOT NULL
+);
 """
 
 
@@ -317,6 +326,47 @@ def get_all_alerts(conn: sqlite3.Connection) -> Dict[str, str]:
     rows = conn.execute("SELECT key, value FROM alerts").fetchall()
     return {k: v for k, v in rows}
 
+
+# ======================================================================= #
+#  Strategies
+# ======================================================================= #
+
+def save_strategy(conn: sqlite3.Connection, name: str, content_json: str) -> None:
+    conn.execute(
+        "INSERT INTO strategies (name, content_json, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET content_json=excluded.content_json, updated_at=excluded.updated_at",
+        (name, content_json, _now()),
+    )
+    conn.commit()
+
+
+def get_strategies(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM strategies ORDER BY name").fetchall()
+    if not rows:
+        return []
+    cols = [d[0] for d in conn.execute("SELECT * FROM strategies LIMIT 0").description]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+def delete_strategy(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute("DELETE FROM strategies WHERE name = ?", (name,))
+    conn.commit()
+
+
+def set_active_strategy(conn: sqlite3.Connection, name: str) -> None:
+    # Deactivate all
+    conn.execute("UPDATE strategies SET is_active = 0")
+    # Activate target
+    conn.execute("UPDATE strategies SET is_active = 1 WHERE name = ?", (name,))
+    conn.commit()
+
+
+def get_active_strategy(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
+    row = conn.execute("SELECT * FROM strategies WHERE is_active = 1 LIMIT 1").fetchone()
+    if not row:
+        return None
+    cols = [d[0] for d in conn.execute("SELECT * FROM strategies LIMIT 0").description]
+    return dict(zip(cols, row))
 
 # ======================================================================= #
 #  Connection factory

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import dataclasses
 import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -52,6 +53,7 @@ from kill_switch import KillSwitch
 from telegram_manager import TelegramManager
 from strategy_engine import DailyDecision, EffectiveState, StrategyEngine
 from trade_manager import OrderIntent, OrderSide, PositionInfo, TradeManager, TradeManagerState
+from risk import RiskManager, RiskConfig, RiskVerdict, VerdictAction
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +135,14 @@ class Runtime:
 
         self.strategy = StrategyEngine(signal_ticker=self.cfg.signal_ticker)
         self.trade_mgr = TradeManager()
+        self.risk_mgr = RiskManager(
+            RiskConfig(
+                max_capital_per_trade_pct=0.10,
+                max_daily_loss_pct=0.03,
+                max_open_positions=5,
+            ),
+            initial_equity=0.0
+        )
         self.kiwoom: Optional[KiwoomAdapter] = None
         self.kill_sw: Optional[KillSwitch] = None
         self.telegram_mgr: Optional[TelegramManager] = None
@@ -155,6 +165,7 @@ class Runtime:
             object.__setattr__(self.cfg, "kiwoom_account", accts[0])
 
         self.kiwoom.on_chejan(self._on_chejan)
+        self._init_risk_manager()
         self._reconcile(is_startup=True)
         self._init_telegram_notifications()
 
@@ -165,6 +176,29 @@ class Runtime:
         self._timer.timeout.connect(self._scheduler_tick)
         self._timer.start(30_000)
         app.exec_()
+
+    def _init_risk_manager(self) -> None:
+        if not self.kiwoom:
+            return
+        try:
+            payload = self.kiwoom.get_overseas_holdings_and_cash()
+            cash = float(payload.get("available_cash", 0.0))
+            # Estimate equity if total_equity not explicitly provided
+            equity = float(payload.get("total_equity", 0.0))
+            holdings = payload.get("holdings", [])
+            
+            if equity <= 0:
+                holdings_val = sum(float(h.get("qty", 0)) * float(h.get("current_price", h.get("avg_cost", 0))) for h in holdings)
+                equity = cash + holdings_val
+            
+            self.risk_mgr.reset_daily(equity)
+            for h in holdings:
+                qty = int(h.get("qty", 0))
+                if qty > 0:
+                    self.risk_mgr.open_position(h.get("symbol", ""), qty, float(h.get("avg_cost", 0.0)))
+            log.info("RiskManager initialized. Equity: %.2f, Positions: %d", equity, self.risk_mgr.open_position_count)
+        except Exception as e:
+            log.error("Failed to initialize RiskManager: %s", e)
 
     def _scheduler_tick(self) -> None:
         if not self.kiwoom:
@@ -223,6 +257,10 @@ class Runtime:
         try:
             soxl_px = self.kiwoom.get_overseas_quote(self.cfg.exec_bull)
             soxs_px = self.kiwoom.get_overseas_quote(self.cfg.exec_bear)
+            
+            # Update RiskManager with latest prices for P&L tracking
+            self.risk_mgr.update_price(self.cfg.exec_bull, soxl_px)
+            self.risk_mgr.update_price(self.cfg.exec_bear, soxs_px)
         except Exception as exc:
             log.error("Price fetch failed, trading skipped: %s", exc)
             if self.kill_sw:
@@ -329,6 +367,30 @@ class Runtime:
             return
         action_key = f"{intent.side.value}_{intent.symbol}_{today_str}"
 
+        # --- Risk Check ---
+        price_for_risk = intent.limit_price_hint or 0.0
+        if price_for_risk <= 0 and intent.symbol:
+            try:
+                price_for_risk = self._fetch_current_price(intent.symbol)
+            except Exception:
+                pass
+
+        verdict = self.risk_mgr.check_order(
+            side=intent.side.value,
+            symbol=intent.symbol,
+            qty=intent.qty,
+            notional=intent.notional,
+            price=price_for_risk
+        )
+
+        if not verdict.is_allowed:
+            log.warning("RiskManager REJECT %s %s: %s", intent.symbol, intent.side.value, verdict.reason)
+            return
+        if verdict.action == VerdictAction.REDUCE and verdict.allowed_qty is not None:
+            log.info("RiskManager REDUCE %s: %s", intent.symbol, verdict.reason)
+            intent = dataclasses.replace(intent, qty=verdict.allowed_qty)
+        # ------------------
+
         if intent.side == OrderSide.BUY:
             if not try_lock_action(self.conn, today_str, action_key):
                 self.conn.commit()
@@ -388,6 +450,11 @@ class Runtime:
             tm_state = _load_tm_state(self.conn)
             tm_state = self.trade_mgr.apply_fill(data.symbol, side, data.qty, data.price, pd.Timestamp.now(), tm_state)
             _persist_tm_state(self.conn, tm_state)
+
+            if side == OrderSide.BUY:
+                self.risk_mgr.open_position(data.symbol, data.qty, data.price)
+            else:
+                self.risk_mgr.reduce_position(data.symbol, data.qty, data.price)
 
             if side == OrderSide.BUY:
                 today_str = _eastern_now(self.cfg).strftime("%Y-%m-%d")
